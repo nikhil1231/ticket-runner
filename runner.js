@@ -24,6 +24,7 @@ function loadEnv() {
 
 function loadConfig() {
   const config = JSON.parse(fs.readFileSync(path.join(baseDir, 'config.json'), 'utf8'));
+  config.repoPath = path.resolve(baseDir, config.repoPath);
   config.baseDir = baseDir;
   return config;
 }

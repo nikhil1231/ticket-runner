@@ -1,5 +1,5 @@
 {
-  "repoPath": "C:\\Users\\Nikhil\\Documents\\Programming\\Apps\\calorieswipe",
+  "repoPath": "../../Apps/calorieswipe",
   "baseBranch": "main",
   "pollIntervalMs": 60000,
   "runTimeoutMs": 1500000,
