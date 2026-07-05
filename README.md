@@ -64,10 +64,15 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
   touched. Nothing is pushed.
 - On startup, `For AI` tickets stuck in `In progress` (crashed runner) are requeued or
   failed.
+- Between tickets, the runner fetches `origin/main`. A clean checkout is
+  fast-forwarded and the systemd service restarts onto the new code. Dirty or
+  diverged checkouts are logged and left untouched; update failures do not stop
+  ticket polling.
 
 ## Config
 
-`config.json`: repo path, base branch, poll interval, run/install timeouts,
+`config.json`: repo path, base branch, poll interval, automatic update remote,
+run/install timeouts,
 max attempts, the two boards (database IDs, app dir, commit scope), and
 per-CLI command + extra args. Codex runs with `--sandbox workspace-write`; if
 that misbehaves on Windows, set `"sandbox": "danger-full-access"` in

@@ -2,6 +2,11 @@
   "repoPath": "../../Apps/calorieswipe",
   "baseBranch": "main",
   "pollIntervalMs": 60000,
+  "autoUpdate": {
+    "enabled": true,
+    "remote": "origin",
+    "branch": "main"
+  },
   "runTimeoutMs": 1500000,
   "installTimeoutMs": 900000,
   "maxAttempts": 2,

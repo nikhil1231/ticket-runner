@@ -7,6 +7,8 @@ const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
 const worktrees = require('./lib/worktree');
 const eas = require('./lib/eas');
+const updater = require('./lib/update');
+const { execFileSync } = require('child_process');
 
 const baseDir = __dirname;
 
@@ -146,6 +148,29 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function checkForSelfUpdate(config) {
+  if (!config.autoUpdate?.enabled) return false;
+  try {
+    const result = updater.checkForUpdate({
+      repoPath: baseDir,
+      remote: config.autoUpdate.remote || 'origin',
+      branch: config.autoUpdate.branch || 'main',
+    });
+    if (result.updated) {
+      log(`updated runner to ${result.headSha.slice(0, 7)}; restarting service`);
+      if (process.platform !== 'win32') {
+        try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' }); } catch {}
+      }
+      return true;
+    }
+    if (result.reason === 'dirty') log('auto-update skipped: runner checkout has local changes');
+    if (result.reason === 'diverged') log('auto-update skipped: local and remote histories have diverged');
+  } catch (e) {
+    log(`auto-update check failed (non-fatal): ${e.message}`);
+  }
+  return false;
+}
+
 async function main() {
   loadEnv();
   if (!process.env.NOTION_TOKEN) {
@@ -166,10 +191,12 @@ async function main() {
     await cleanup(config);
   } else if (cmd === 'loop') {
     log(`ticket-runner starting: ${config.boards.map((b) => b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
+    if (checkForSelfUpdate(config)) process.exit(75);
     await recoverStaleClaims(config);
     // strictly serial: the next poll only happens after the current run ends
     for (;;) {
       try {
+        if (checkForSelfUpdate(config)) process.exit(75);
         await tick(config);
       } catch (e) {
         log(`tick failed: ${e.message}`);
