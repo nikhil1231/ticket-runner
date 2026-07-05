@@ -37,22 +37,22 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
 
 1. Write a ticket on either board (title + body). Optionally set `CLI` to
    `antigravity`. Check **For AI**.
-2. The runner claims it (`AI Status = Running`, `Status = In progress`,
-   `Attempts + 1`), creates a worktree of calorieswipe on branch
+2. The runner claims it (`Status = In progress`, `Attempts + 1`), creates a
+   worktree of calorieswipe on branch
    `ai/<shortId>` under `worktrees/`, runs `yarn install`, and spawns the CLI
    with the ticket as prompt.
 3. Outcomes (always posted as a comment on the ticket):
-   - **In Review** — work committed on the branch; the `Branch` field is set.
+   - **In review** — work committed on the branch; the `Branch` field is set.
      Review the diff in the worktree, merge it, set `Status = Done`, uncheck
      **For AI**. Run `node runner.js cleanup` occasionally to prune merged
      worktrees.
-   - **Needs Info** — the agent found the ticket too vague. Edit the ticket
-     body, then clear `AI Status` to requeue.
+   - **Needs info** — the agent found the ticket too vague. Edit the ticket
+     body, then move it to `Not started` to requeue.
    - **Failed** — after 2 attempts (first failure auto-requeues). Log tail is
-     in the comment, full logs under `runs/`. Clear `AI Status` to retry after
-     fixing the cause.
-4. To retry anything manually: clear the `AI Status` field (and reset
-   `Attempts` if you want a full fresh set of retries).
+     in the comment, full logs under `runs/`. Move it to `Not started` to retry
+     after fixing the cause.
+4. To retry anything manually: move it to `Not started` (and reset `Attempts`
+   if you want a full fresh set of retries).
 
 ## Guard rails
 
@@ -61,7 +61,7 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
 - Serial: one ticket at a time across both boards (oldest first).
 - Agents work in a disposable worktree on their own branch; `main` is never
   touched. Nothing is pushed.
-- On startup, tickets stuck in `Running` (crashed runner) are requeued or
+- On startup, `For AI` tickets stuck in `In progress` (crashed runner) are requeued or
   failed.
 
 ## Config

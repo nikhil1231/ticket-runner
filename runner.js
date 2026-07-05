@@ -32,8 +32,12 @@ function loadConfig() {
 const QUEUE_FILTER = {
   and: [
     { property: 'For AI', checkbox: { equals: true } },
-    { property: 'AI Status', select: { is_empty: true } },
-    { property: 'Status', status: { does_not_equal: 'Done' } },
+    {
+      or: [
+        { property: 'Status', status: { equals: 'Backlog' } },
+        { property: 'Status', status: { equals: 'Not started' } },
+      ],
+    },
   ],
 };
 
@@ -47,23 +51,25 @@ async function findCandidates(config) {
   return all;
 }
 
-// Single-runner assumption: anything still "Running" at startup is an orphan
+// Single-runner assumption: any For AI ticket still "In progress" at startup is an orphan
 // from a crash or forced shutdown.
 async function recoverStaleClaims(config) {
   for (const board of config.boards) {
     const pages = await notion.queryDatabase(board.databaseId, {
-      property: 'AI Status',
-      select: { equals: 'Running' },
+      and: [
+        { property: 'For AI', checkbox: { equals: true } },
+        { property: 'Status', status: { equals: 'In progress' } },
+      ],
     });
     for (const page of pages) {
       const ticket = extractTicket(page);
       if (ticket.attempts < config.maxAttempts) {
         log(`stale claim "${ticket.title}" (${board.app}) — requeuing`);
-        await notion.updatePage(ticket.pageId, { 'AI Status': { select: null } });
+        await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Not started' } } });
         await notion.safeComment(ticket.pageId, `♻ Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`, log);
       } else {
         log(`stale claim "${ticket.title}" (${board.app}) — max attempts reached, marking Failed`);
-        await notion.updatePage(ticket.pageId, { 'AI Status': { select: { name: 'Failed' } } });
+        await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Failed' } } });
         await notion.safeComment(ticket.pageId, `❌ Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`, log);
       }
     }
