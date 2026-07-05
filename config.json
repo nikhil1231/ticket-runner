@@ -6,6 +6,12 @@
   "installTimeoutMs": 900000,
   "maxAttempts": 2,
   "fallbackChain": ["codex", "antigravity"],
+  "review": {
+    "enabled": true,
+    "maxRounds": 2,
+    "reviewer": { "cli": "antigravity", "model": "Gemini 3.5 Flash (Low)" },
+    "alt": { "cli": "codex", "model": "" }
+  },
   "boards": [
     {
       "app": "caligo",
@@ -17,7 +23,8 @@
       "app": "workouttracker",
       "databaseId": "cca71459-bbd1-4583-926e-5aa1d5b88982",
       "appDir": "apps/workouttracker",
-      "scope": "workout"
+      "scope": "workout",
+      "easChannel": "testing"
     }
   ],
   "adapters": {

@@ -30,6 +30,7 @@ and fall through when it's walled.
 node runner.js                 # poll loop (every 60s), one ticket at a time
 node runner.js once            # single tick
 node runner.js once --dry-run  # show what would be claimed, no writes
+node runner.js push <shortId>  # manually publish a worktree to its EAS channel
 node runner.js cleanup         # remove worktrees/branches of Done tickets
 ```
 
@@ -72,6 +73,31 @@ per-CLI command + extra args. Codex runs with `--sandbox workspace-write`; if
 that misbehaves on Windows, set `"sandbox": "danger-full-access"` in
 `adapters.codex` (the worktree still contains the blast radius, but nothing
 else does).
+
+## Review loop
+
+After a ticket is implemented, an AI reviewer judges the diff (same codex↔agy
+fallback chain as implementation, starting from a **different** model). Default
+reviewer is agy `Gemini 3.5 Flash (Low)`; if the implementer already used that
+exact engine+model, review falls back to `alt` (codex) so it's never same-on-same.
+
+- **APPROVE** → publish the branch to the board's EAS `testing` channel and move
+  the ticket to **Testing** for you to verify on-device, then set Done.
+- **REQUEST_CHANGES** → the notes go into `Review feedback`, the ticket returns to
+  **Not started**, and the next run's prompt includes that feedback. Bounded by
+  `review.maxRounds` (default 2); after that it parks in **In review** for a human.
+  `Attempts` is reset on a change-request so it doesn't count as an implement failure.
+- A per-ticket **`Model`** field pins the implementer model (empty = engine default);
+  the runner writes back the `engine / model` it actually used.
+
+Disable review globally with `review.enabled: false` in config (ticket then lands
+in **In review** as before).
+
+Requires a **Testing** Status option on each board (add it in the Notion UI — the
+API can't add status options), and `EXPO_TOKEN` in `.env` for headless EAS pushes.
+Only boards with an `easChannel` in config get pushed; the target needs a one-time
+`eas build --profile testing` installed on-device, and EAS Update only ships JS/asset
+changes (native changes need a rebuild).
 
 ## Engines
 

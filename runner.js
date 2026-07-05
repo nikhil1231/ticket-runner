@@ -6,6 +6,7 @@ const notion = require('./lib/notion');
 const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
 const worktrees = require('./lib/worktree');
+const eas = require('./lib/eas');
 
 const baseDir = __dirname;
 
@@ -118,6 +119,29 @@ async function cleanup(config) {
   }
 }
 
+// Manually publish a worktree's current code to its board's EAS channel.
+async function pushCmd(config, shortId, channelOverride) {
+  if (!shortId) {
+    console.error('usage: node runner.js push <shortId> [channel]');
+    process.exit(1);
+  }
+  const metaPath = path.join(baseDir, 'worktrees', `${shortId}.json`);
+  if (!fs.existsSync(metaPath)) {
+    console.error(`no worktree metadata for ${shortId} (looked in worktrees/${shortId}.json)`);
+    process.exit(1);
+  }
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  const board = config.boards.find((b) => b.app === meta.app);
+  const channel = channelOverride || (board && board.easChannel);
+  if (!board || !channel) {
+    console.error(`no EAS channel configured for app "${meta.app}" (set easChannel in config or pass one)`);
+    process.exit(1);
+  }
+  const res = eas.pushUpdate({ worktreeDir: meta.dir, appDir: board.appDir, channel, message: `${board.scope}: ${meta.title} [${meta.branch}]`, log });
+  if (!res.ok) process.exit(1);
+  log(`pushed ${meta.branch} to "${channel}"`);
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -136,6 +160,8 @@ async function main() {
 
   if (cmd === 'once') {
     await tick(config, { dryRun });
+  } else if (cmd === 'push') {
+    await pushCmd(config, process.argv[3], process.argv[4]);
   } else if (cmd === 'cleanup') {
     await cleanup(config);
   } else if (cmd === 'loop') {
@@ -151,7 +177,7 @@ async function main() {
       await sleep(config.pollIntervalMs);
     }
   } else {
-    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | cleanup)`);
+    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | push <shortId> [channel] | cleanup)`);
     process.exit(1);
   }
 }
