@@ -8,7 +8,8 @@
     "start": "node runner.js",
     "once": "node runner.js once",
     "dry": "node runner.js once --dry-run",
-    "cleanup": "node runner.js cleanup"
+    "cleanup": "node runner.js cleanup",
+    "test": "node --test test/run.test.js"
   },
   "engines": {
     "node": ">=18"
