@@ -59,11 +59,11 @@ async function recoverStaleClaims(config) {
       if (ticket.attempts < config.maxAttempts) {
         log(`stale claim "${ticket.title}" (${board.app}) — requeuing`);
         await notion.updatePage(ticket.pageId, { 'AI Status': { select: null } });
-        await notion.createComment(ticket.pageId, `♻ Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`);
+        await notion.safeComment(ticket.pageId, `♻ Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`, log);
       } else {
         log(`stale claim "${ticket.title}" (${board.app}) — max attempts reached, marking Failed`);
         await notion.updatePage(ticket.pageId, { 'AI Status': { select: { name: 'Failed' } } });
-        await notion.createComment(ticket.pageId, `❌ Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`);
+        await notion.safeComment(ticket.pageId, `❌ Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`, log);
       }
     }
   }
