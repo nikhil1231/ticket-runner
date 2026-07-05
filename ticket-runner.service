@@ -8,6 +8,9 @@ Type=simple
 WorkingDirectory=%h/Documents/Programming/AI/ticket-runner
 ExecStart=%h/.local/bin/node runner.js
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Ubuntu's AppArmor user-namespace restriction prevents Codex's bwrap sandbox.
+# Opt out of that inner sandbox for this dedicated, user-scoped runner.
+Environment=CODEX_SANDBOX=danger-full-access
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
