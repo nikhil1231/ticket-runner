@@ -5,6 +5,12 @@ claims one at a time, and completes it with a headless coding CLI (**codex** by
 default, **antigravity** if the ticket's `CLI` field says so) in a fresh git
 worktree of the calorieswipe monorepo. Notion is the only state store.
 
+If the chosen engine fails or hits its usage quota, the runner automatically
+falls back to the next engine in `fallbackChain` (default `codex → antigravity`)
+within the same attempt — so a codex quota wall doesn't waste a ticket attempt.
+An engine that reports a quota/rate-limit error is skipped for the rest of the
+runner process (until restart, when its window may have reset).
+
 ## Setup
 
 1. **Notion token**: create an internal integration at
@@ -66,9 +72,21 @@ that misbehaves on Windows, set `"sandbox": "danger-full-access"` in
 `adapters.codex` (the worktree still contains the blast radius, but nothing
 else does).
 
+## Engines
+
+- **codex** (`codex exec`): sandboxed (`workspace-write`); can't reach the
+  worktree's `.git`, so it makes changes and the runner commits them. Prompt
+  piped via stdin.
+- **antigravity** (`agy --print`): unsandboxed but told not to run git (runner
+  commits, same as codex). The prompt is dropped into the worktree as
+  `.agent-task.md` (deleted before the commit) because agy operates on its CWD,
+  not on a prompt-file path. Noticeably slower than codex; used mainly as the
+  fallback. Pick a model with `adapters.antigravity.model` in config (see
+  `agy models`).
+
 ## Notes
 
-- The antigravity path is wired but untested until `agy` is installed and
-  authenticated on this machine.
-- Prompts are never passed on the command line (stdin for codex, prompt file
-  for agy) to survive newlines/quotes on Windows.
+- Both engines are verified working end-to-end on this machine (codex on a real
+  ticket; agy via the adapter against a scratch repo).
+- Prompts are never passed on the command line (stdin for codex, in-worktree
+  file for agy) to survive newlines/quotes on Windows.

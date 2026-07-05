@@ -69,7 +69,7 @@ async function recoverStaleClaims(config) {
   }
 }
 
-async function tick(config, { dryRun = false } = {}) {
+async function tick(config, { dryRun = false, exhausted } = {}) {
   const candidates = await findCandidates(config);
   if (!candidates.length) {
     log('queue empty');
@@ -80,8 +80,8 @@ async function tick(config, { dryRun = false } = {}) {
     log(`dry run — would claim "${candidates[0].ticket.title}"`);
     return;
   }
-  const { board, page, ticket } = candidates[0];
-  await runTicket({ config, board, page, ticket, log });
+  const { board, ticket } = candidates[0];
+  await runTicket({ config, board, ticket, log, exhausted });
 }
 
 // Removes worktrees + branches for tickets that were merged and marked Done.
@@ -134,10 +134,12 @@ async function main() {
   } else if (cmd === 'loop') {
     log(`ticket-runner starting: ${config.boards.map((b) => b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
     await recoverStaleClaims(config);
+    // engines that reported quota exhaustion this process — skipped until restart
+    const exhausted = new Set();
     // strictly serial: the next poll only happens after the current run ends
     for (;;) {
       try {
-        await tick(config);
+        await tick(config, { exhausted });
       } catch (e) {
         log(`tick failed: ${e.message}`);
       }

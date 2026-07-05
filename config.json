@@ -5,6 +5,7 @@
   "runTimeoutMs": 1500000,
   "installTimeoutMs": 900000,
   "maxAttempts": 2,
+  "fallbackChain": ["codex", "antigravity"],
   "boards": [
     {
       "app": "caligo",
