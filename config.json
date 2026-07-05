@@ -1,0 +1,33 @@
+{
+  "repoPath": "C:\\Users\\Nikhil\\Documents\\Programming\\Apps\\calorieswipe",
+  "baseBranch": "main",
+  "pollIntervalMs": 60000,
+  "runTimeoutMs": 1500000,
+  "installTimeoutMs": 900000,
+  "maxAttempts": 2,
+  "boards": [
+    {
+      "app": "caligo",
+      "databaseId": "1ccd0de6-9f64-8032-9050-e3c012ff885d",
+      "appDir": "apps/caligo",
+      "scope": "caligo"
+    },
+    {
+      "app": "workouttracker",
+      "databaseId": "cca71459-bbd1-4583-926e-5aa1d5b88982",
+      "appDir": "apps/workouttracker",
+      "scope": "workout"
+    }
+  ],
+  "adapters": {
+    "codex": {
+      "cmd": "codex",
+      "sandbox": "workspace-write",
+      "extraArgs": []
+    },
+    "antigravity": {
+      "cmd": "agy",
+      "extraArgs": []
+    }
+  }
+}

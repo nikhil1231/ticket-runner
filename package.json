@@ -1,0 +1,16 @@
+{
+  "name": "ticket-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Polls Notion boards for AI-flagged tickets and completes them with a coding CLI (codex/antigravity) in a git worktree.",
+  "main": "runner.js",
+  "scripts": {
+    "start": "node runner.js",
+    "once": "node runner.js once",
+    "dry": "node runner.js once --dry-run",
+    "cleanup": "node runner.js cleanup"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
