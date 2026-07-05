@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Documents/Programming/AI/ticket-runner
-ExecStart=/usr/bin/node runner.js
+ExecStart=%h/.local/bin/node runner.js
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=10
