@@ -5,11 +5,12 @@ claims one at a time, and completes it with a headless coding CLI (**codex** by
 default, **antigravity** if the ticket's `CLI` field says so) in a fresh git
 worktree of the calorieswipe monorepo. Notion is the only state store.
 
-If the chosen engine fails or hits its usage quota, the runner automatically
-falls back to the next engine in `fallbackChain` (default `codex → antigravity`)
-within the same attempt — so a codex quota wall doesn't waste a ticket attempt.
-An engine that reports a quota/rate-limit error is skipped for the rest of the
-runner process (until restart, when its window may have reset).
+Every ticket optimistically starts at the top of the chain (codex first). If the
+chosen engine fails or hits its usage quota, the runner falls back to the next
+engine in `fallbackChain` (default `codex → antigravity`) within the same attempt
+— so a codex quota wall doesn't waste a ticket attempt. There's no backoff state:
+a quota rejection does no real work, so it's cheap to just try codex each time
+and fall through when it's walled.
 
 ## Setup
 
