@@ -8,8 +8,9 @@
     "start": "node runner.js",
     "once": "node runner.js once",
     "dry": "node runner.js once --dry-run",
+    "setup:notion": "node scripts/setup-notion.js",
     "cleanup": "node runner.js cleanup",
-    "test": "node --test test/run.test.js test/review.test.js test/update.test.js"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"

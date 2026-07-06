@@ -10,19 +10,43 @@
   "runTimeoutMs": 1500000,
   "installTimeoutMs": 900000,
   "maxAttempts": 2,
-  "fallbackChain": ["codex", "antigravity"],
+  "fallbackPolicies": {
+    "feature": [
+      { "provider": "codex", "model": "" },
+      { "provider": "antigravity", "model": "Claude Sonnet 4.6 (Thinking)" },
+      { "provider": "antigravity", "model": "Gemini 3.1 Pro (High)" },
+      { "provider": "antigravity", "model": "Gemini 3.5 Flash (Low)" },
+      { "provider": "antigravity", "model": "GPT-OSS 120B (Medium)" }
+    ],
+    "incubator": [
+      { "provider": "codex", "model": "" },
+      { "provider": "antigravity", "model": "Claude Sonnet 4.6 (Thinking)" },
+      { "provider": "antigravity", "model": "Gemini 3.1 Pro (High)" },
+      { "provider": "antigravity", "model": "Gemini 3.5 Flash (Low)" },
+      { "provider": "antigravity", "model": "GPT-OSS 120B (Medium)" }
+    ],
+    "review": [
+      { "provider": "antigravity", "model": "Gemini 3.5 Flash (Low)" },
+      { "provider": "codex", "model": "" },
+      { "provider": "antigravity", "model": "Gemini 3.1 Pro (High)" },
+      { "provider": "antigravity", "model": "Claude Sonnet 4.6 (Thinking)" },
+      { "provider": "antigravity", "model": "GPT-OSS 120B (Medium)" }
+    ]
+  },
+  "incubator": {
+    "databaseId": "394d0de6-9f64-80cd-9ef7-c355dc97d664"
+  },
   "review": {
     "enabled": true,
-    "maxRounds": 2,
-    "reviewer": { "cli": "antigravity", "model": "Gemini 3.5 Flash (Low)" },
-    "alt": { "cli": "codex", "model": "" }
+    "maxRounds": 2
   },
   "boards": [
     {
       "app": "caligo",
       "databaseId": "1ccd0de6-9f64-8032-9050-e3c012ff885d",
       "appDir": "apps/caligo",
-      "scope": "caligo"
+      "scope": "caligo",
+      "easChannel": "testing"
     },
     {
       "app": "workouttracker",

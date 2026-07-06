@@ -2,34 +2,35 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pickReviewer, parseReviewVerdict } = require('../lib/review');
+const { buildReviewCandidates, parseReviewVerdict } = require('../lib/review');
 const { extractTicket } = require('../lib/ticket');
 const { buildPrompt } = require('../lib/run');
 
 const config = {
-  review: {
-    reviewer: { cli: 'antigravity', model: 'Gemini 3.5 Flash (Low)' },
-    alt: { cli: 'codex', model: '' },
-  },
+  fallbackPolicies: { review: [
+    { provider: 'antigravity', model: 'Gemini 3.5 Flash (Low)' },
+    { provider: 'codex', model: '' },
+    { provider: 'antigravity', model: 'Gemini 3.1 Pro (High)' },
+  ] },
 };
 
 test('reviewer defaults to agy Flash when the implementer used codex', () => {
-  assert.deepEqual(pickReviewer({ cli: 'codex', model: '' }, config), {
-    cli: 'antigravity',
+  assert.deepEqual(buildReviewCandidates({ provider: 'codex', model: '' }, config)[0], {
+    provider: 'antigravity',
     model: 'Gemini 3.5 Flash (Low)',
   });
 });
 
-test('reviewer switches to the alternate when the implementer used the same engine+model', () => {
-  assert.deepEqual(pickReviewer({ cli: 'antigravity', model: 'Gemini 3.5 Flash (Low)' }, config), {
-    cli: 'codex',
+test('review excludes the exact implementation candidate', () => {
+  assert.deepEqual(buildReviewCandidates({ provider: 'antigravity', model: 'Gemini 3.5 Flash (Low)' }, config)[0], {
+    provider: 'codex',
     model: '',
   });
 });
 
 test('reviewer stays on agy Flash when implementer used a different agy model', () => {
-  assert.deepEqual(pickReviewer({ cli: 'antigravity', model: 'Gemini 3.1 Pro (High)' }, config), {
-    cli: 'antigravity',
+  assert.deepEqual(buildReviewCandidates({ provider: 'antigravity', model: 'Gemini 3.1 Pro (High)' }, config)[0], {
+    provider: 'antigravity',
     model: 'Gemini 3.5 Flash (Low)',
   });
 });
@@ -63,6 +64,7 @@ test('extractTicket reads the new Model, Review rounds and Review feedback field
       Model: { rich_text: [{ plain_text: 'Gemini 3.1 Pro (High)' }] },
       'Review rounds': { number: 2 },
       'Review feedback': { rich_text: [{ plain_text: 'handle the empty case' }] },
+      'Last agent': { rich_text: [{ plain_text: 'codex' }] },
     },
   };
   const t = extractTicket(page);
@@ -70,6 +72,7 @@ test('extractTicket reads the new Model, Review rounds and Review feedback field
   assert.equal(t.model, 'Gemini 3.1 Pro (High)');
   assert.equal(t.reviewRounds, 2);
   assert.equal(t.reviewFeedback, 'handle the empty case');
+  assert.equal(t.lastAgent, 'codex');
 });
 
 test('extractTicket defaults the new fields when absent', () => {

@@ -1,16 +1,15 @@
 # ticket-runner
 
 Polls the Caligo and WorkoutTracker Notion boards for tickets flagged **For AI**,
-claims one at a time, and completes it with a headless coding CLI (**codex** by
-default, **antigravity** if the ticket's `CLI` field says so) in a fresh git
-worktree of the calorieswipe monorepo. Notion is the only state store.
+and the Ticket Incubator for feature briefs. It plans or implements one ticket at
+a time with headless coding CLIs in isolated git worktrees. Notion is the only
+state store.
 
-Every ticket optimistically starts at the top of the chain (codex first). If the
-chosen engine fails or hits its usage quota, the runner falls back to the next
-engine in `fallbackChain` (default `codex → antigravity`) within the same attempt
-— so a codex quota wall doesn't waste a ticket attempt. There's no backoff state:
-a quota rejection does no real work, so it's cheap to just try codex each time
-and fall through when it's walled.
+Fallback policies are ordered provider/model candidates. Feature implementation
+and incubation use Codex, then agy Claude, Pro, Flash and GPT-OSS. Review uses agy
+Flash, Codex, Pro, Claude and GPT-OSS, excluding the exact implementation model.
+Quota errors, timeouts, process failures and invalid structured output advance to
+the next candidate. The resolver is stateless: each ticket starts at the top.
 
 ## Setup
 
@@ -23,6 +22,8 @@ and fall through when it's walled.
 3. **antigravity** (optional): install the Antigravity CLI (`agy`) and log in
    once (or set `ANTIGRAVITY_TOKEN`).
 4. Node ≥ 18. No npm dependencies.
+5. Run `npm run setup:notion` once. It idempotently adds the incubator fields and
+   statuses plus `Last agent` on the app boards.
 
 ## Usage
 
@@ -55,6 +56,21 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
 4. To retry anything manually: move it to `Not started` (and reset `Attempts`
    if you want a full fresh set of retries).
 
+## Ticket incubator
+
+1. Create a ticket in **Ticket Incubator**, add a title/body, select `App`, and
+   leave it in **Not started**.
+2. The runner inspects the selected app in a disposable detached worktree and
+   appends an **AI implementation plan**, then moves the ticket to **In review**.
+3. To revise it, add top-level page comments and move it back to **Not started**.
+   Only the managed plan section is replaced; the original brief is preserved.
+4. To approve it, move it to **Done**. The runner moves the same Notion page to
+   the selected app board, sets **For AI**, and queues it as **Not started** for
+   implementation. The page body and comments move with it.
+
+Missing briefs or `App` selections go to **Needs info**. Only open, top-level
+human comments are used as revision feedback.
+
 ## Guard rails
 
 - Hard wall-clock timeout per run (25 min default) with full process-tree kill.
@@ -72,19 +88,18 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
 ## Config
 
 `config.json`: repo path, base branch, poll interval, automatic update remote,
-run/install timeouts,
-max attempts, the two boards (database IDs, app dir, commit scope), and
-per-CLI command + extra args. Codex runs with `--sandbox workspace-write`; if
+run/install timeouts, max attempts, app/incubator database IDs, service-specific
+`fallbackPolicies`, and per-provider command settings. Codex runs with
+`--sandbox workspace-write`; if
 that misbehaves on Windows, set `"sandbox": "danger-full-access"` in
 `adapters.codex` (the worktree still contains the blast radius, but nothing
 else does).
 
 ## Review loop
 
-After a ticket is implemented, an AI reviewer judges the diff (same codex↔agy
-fallback chain as implementation, starting from a **different** model). Default
-reviewer is agy `Gemini 3.5 Flash (Low)`; if the implementer already used that
-exact engine+model, review falls back to `alt` (codex) so it's never same-on-same.
+After a ticket is implemented, an AI reviewer judges the diff using the review
+policy. The exact implementation provider/model is removed from that policy, so
+review is never same-on-same.
 
 - **APPROVE** → publish the branch to the board's EAS `testing` channel and move
   the ticket to **Testing** for you to verify on-device, then set Done.
@@ -92,8 +107,9 @@ exact engine+model, review falls back to `alt` (codex) so it's never same-on-sam
   **Not started**, and the next run's prompt includes that feedback. Bounded by
   `review.maxRounds` (default 2); after that it parks in **In review** for a human.
   `Attempts` is reset on a change-request so it doesn't count as an implement failure.
-- A per-ticket **`Model`** field pins the implementer model (empty = engine default);
-  the runner writes back the `engine / model` it actually used.
+- Per-ticket **`CLI`** and **`Model`** fields optionally prepend an implementation
+  override. The actual successful candidate is written to **`Last agent`**, so
+  the override remains valid on review-driven retries.
 
 Disable review globally with `review.enabled: false` in config (ticket then lands
 in **In review** as before).
@@ -113,8 +129,8 @@ changes (native changes need a rebuild).
   commits, same as codex). The prompt is dropped into the worktree as
   `.agent-task.md` (deleted before the commit) because agy operates on its CWD,
   not on a prompt-file path. Noticeably slower than codex; used mainly as the
-  fallback. Pick a model with `adapters.antigravity.model` in config (see
-  `agy models`).
+  fallback. Candidate model names in `fallbackPolicies` must exactly match
+  `agy models`.
 
 ## Notes
 

@@ -5,6 +5,7 @@ const path = require('path');
 const notion = require('./lib/notion');
 const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
+const { extractIncubatorTicket, recoveryStatus, runIncubatorTicket, handoffTicket } = require('./lib/incubator');
 const worktrees = require('./lib/worktree');
 const eas = require('./lib/eas');
 const updater = require('./lib/update');
@@ -50,6 +51,16 @@ async function findCandidates(config) {
     const pages = await notion.queryDatabase(board.databaseId, QUEUE_FILTER);
     for (const page of pages) all.push({ board, page, ticket: extractTicket(page) });
   }
+  if (config.incubator?.databaseId) {
+    const pages = await notion.queryDatabase(config.incubator.databaseId, {
+      property: 'Status', status: { equals: 'Not started' },
+    });
+    for (const page of pages) {
+      const ticket = extractIncubatorTicket(page);
+      const board = config.boards.find((item) => item.app === ticket.app);
+      all.push({ type: 'incubator', board, page, ticket });
+    }
+  }
   all.sort((a, b) => a.ticket.createdTime.localeCompare(b.ticket.createdTime));
   return all;
 }
@@ -77,21 +88,59 @@ async function recoverStaleClaims(config) {
       }
     }
   }
+  if (config.incubator?.databaseId) {
+    const pages = await notion.queryDatabase(config.incubator.databaseId, {
+      property: 'Status', status: { equals: 'In progress' },
+    });
+    for (const page of pages) {
+      const ticket = extractIncubatorTicket(page);
+      const status = recoveryStatus(ticket, config.maxAttempts);
+      log(`stale incubator claim "${ticket.title}" — ${status === 'Not started' ? 'requeuing' : 'marking Failed'}`);
+      await notion.updatePage(ticket.pageId, { Status: { status: { name: status } } });
+      await notion.safeComment(ticket.pageId, status === 'Not started'
+        ? `Runner restarted during planning (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`
+        : `Runner restarted during planning and max attempts (${config.maxAttempts}) were reached.`, log);
+    }
+  }
+}
+
+async function processIncubatorHandoffs(config) {
+  if (!config.incubator?.databaseId) return;
+  const pages = await notion.queryDatabase(config.incubator.databaseId, {
+    property: 'Status', status: { equals: 'Done' },
+  });
+  for (const page of pages) {
+    const ticket = extractIncubatorTicket(page);
+    const board = config.boards.find((item) => item.app === ticket.app);
+    await handoffTicket({ config, ticket, board, log });
+  }
 }
 
 async function tick(config, { dryRun = false } = {}) {
+  if (!dryRun) await processIncubatorHandoffs(config);
   const candidates = await findCandidates(config);
   if (!candidates.length) {
     log('queue empty');
     return;
   }
-  log(`queue (${candidates.length}): ${candidates.map((c) => `"${c.ticket.title}" [${c.board.app}/${c.ticket.cli}, attempt ${c.ticket.attempts}]`).join('; ')}`);
+  log(`queue (${candidates.length}): ${candidates.map((c) => c.type === 'incubator'
+    ? `"${c.ticket.title}" [incubator/${c.ticket.app || 'no app'}, attempt ${c.ticket.attempts}]`
+    : `"${c.ticket.title}" [${c.board.app}/${c.ticket.cli || 'policy default'}, attempt ${c.ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
     log(`dry run — would claim "${candidates[0].ticket.title}"`);
     return;
   }
   const { board, ticket } = candidates[0];
-  await runTicket({ config, board, ticket, log });
+  if (candidates[0].type === 'incubator') {
+    if (!board) {
+      await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Needs info' } } });
+      await notion.safeComment(ticket.pageId, 'Select Caligo or WorkoutTracker in App, then return this ticket to Not started.', log);
+      return;
+    }
+    await runIncubatorTicket({ config, board, ticket, log });
+  } else {
+    await runTicket({ config, board, ticket, log });
+  }
 }
 
 // Removes worktrees + branches for tickets that were merged and marked Done.
