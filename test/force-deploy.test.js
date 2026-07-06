@@ -1,0 +1,60 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { forceDeploy } = require('../lib/force-deploy');
+
+function fixture() {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'force-deploy-'));
+  fs.mkdirSync(path.join(baseDir, 'worktrees'));
+  const ticket = { pageId: 'page-123', shortId: 'abc123', title: 'Ship it' };
+  const meta = { pageId: ticket.pageId, app: 'caligo', branch: 'ai/abc123', dir: path.join(baseDir, 'tree') };
+  fs.writeFileSync(path.join(baseDir, 'worktrees', 'abc123.json'), JSON.stringify(meta));
+  const board = { app: 'caligo', appDir: 'apps/caligo', scope: 'caligo', easChannel: 'testing' };
+  return { baseDir, ticket, meta, board };
+}
+
+test('a human override is one-shot and moves a successful push to Testing', async (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.baseDir, { recursive: true, force: true }));
+  const updates = [];
+  const comments = [];
+  let pushArgs;
+  const notion = {
+    updatePage: async (_pageId, properties) => updates.push(properties),
+    safeComment: async (_pageId, comment) => comments.push(comment),
+  };
+  const eas = { pushUpdate: (args) => { pushArgs = args; return { ok: true }; } };
+
+  const result = await forceDeploy({ ...f, notion, eas, log: () => {} });
+
+  assert.equal(result.status, 'deployed');
+  assert.deepEqual(updates[0], { 'Force deploy': { checkbox: false } });
+  assert.equal(updates[1].Status.status.name, 'Testing');
+  assert.equal(pushArgs.channel, 'testing');
+  assert.match(pushArgs.message, /human override/);
+  assert.match(comments[0], /Force deployed/);
+});
+
+test('a failed push remains parked and requires another explicit checkbox tick', async (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.baseDir, { recursive: true, force: true }));
+  const updates = [];
+  const comments = [];
+  const notion = {
+    updatePage: async (_pageId, properties) => updates.push(properties),
+    safeComment: async (_pageId, comment) => comments.push(comment),
+  };
+  const eas = { pushUpdate: () => ({ ok: false, error: 'details\nEAS rejected update' }) };
+
+  const result = await forceDeploy({ ...f, notion, eas, log: () => {} });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0], { 'Force deploy': { checkbox: false } });
+  assert.match(comments[0], /remains In review/);
+  assert.match(comments[0], /EAS rejected update/);
+});

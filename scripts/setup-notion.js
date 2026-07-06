@@ -45,8 +45,11 @@ async function addProperties(databaseId, properties) {
 }
 
 async function setupAppBoard(board) {
-  await addProperties(board.databaseId, { 'Last agent': { rich_text: {} } });
-  console.log(`${board.app}: Last agent ready`);
+  await addProperties(board.databaseId, {
+    'Last agent': { rich_text: {} },
+    'Force deploy': { checkbox: {} },
+  });
+  console.log(`${board.app}: Last agent + Force deploy ready`);
 }
 
 async function setupIncubator() {

@@ -139,6 +139,10 @@ review is never same-on-same.
   **Not started**, and the next run's prompt includes that feedback. Bounded by
   `review.maxRounds` (default 2); after that it parks in **In review** for a human.
   `Attempts` is reset on a change-request so it doesn't count as an implement failure.
+- To override a parked review from Notion, tick **Force deploy** while the ticket is
+  **In review**. The runner clears the one-shot checkbox, publishes the existing
+  branch to the board's EAS channel, and moves the ticket to **Testing**. A failed
+  push leaves it **In review** with a comment; tick the box again to retry.
 - Per-ticket **`CLI`** and **`Model`** fields optionally prepend an implementation
   override. The actual successful candidate is written to **`Last agent`**, so
   the override remains valid on review-driven retries.

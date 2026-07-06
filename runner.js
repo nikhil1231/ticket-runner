@@ -6,6 +6,7 @@ const notion = require('./lib/notion');
 const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
 const { extractIncubatorTicket, recoveryStatus, runIncubatorTicket, handoffTicket } = require('./lib/incubator');
+const { forceDeploy } = require('./lib/force-deploy');
 const worktrees = require('./lib/worktree');
 const eas = require('./lib/eas');
 const updater = require('./lib/update');
@@ -119,8 +120,26 @@ async function processIncubatorHandoffs(config) {
   }
 }
 
+async function processForceDeploys(config) {
+  for (const board of config.boards) {
+    const pages = await notion.queryDatabase(board.databaseId, {
+      and: [
+        { property: 'Status', status: { equals: 'In review' } },
+        { property: 'Force deploy', checkbox: { equals: true } },
+      ],
+    });
+    for (const page of pages) {
+      const ticket = extractTicket(page);
+      await forceDeploy({ baseDir, board, ticket, notion, eas, log });
+    }
+  }
+}
+
 async function tick(config, { dryRun = false } = {}) {
-  if (!dryRun) await processIncubatorHandoffs(config);
+  if (!dryRun) {
+    await processForceDeploys(config);
+    await processIncubatorHandoffs(config);
+  }
   const candidates = await findCandidates(config);
   if (!candidates.length) {
     log('queue empty');
