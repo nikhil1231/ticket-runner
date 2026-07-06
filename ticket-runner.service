@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Documents/Programming/AI/ticket-runner
-ExecStart=%h/.local/bin/node runner.js
+ExecStart=%h/.local/bin/node scripts/supervisor.js
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Ubuntu's AppArmor user-namespace restriction prevents Codex's bwrap sandbox.
 # Opt out of that inner sandbox for this dedicated, user-scoped runner.

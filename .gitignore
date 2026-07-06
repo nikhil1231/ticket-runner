@@ -1,4 +1,6 @@
 .env
 runs/
 worktrees/
+state/
+self-heal-worktrees/
 node_modules/

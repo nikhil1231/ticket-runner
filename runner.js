@@ -10,6 +10,9 @@ const worktrees = require('./lib/worktree');
 const eas = require('./lib/eas');
 const updater = require('./lib/update');
 const { execFileSync } = require('child_process');
+const healingState = require('./lib/healing-state');
+const { classifyFailure } = require('./lib/failure');
+const { repairRunner } = require('./lib/self-heal');
 
 const baseDir = __dirname;
 
@@ -137,10 +140,37 @@ async function tick(config, { dryRun = false } = {}) {
       await notion.safeComment(ticket.pageId, 'Select Caligo or WorkoutTracker in App, then return this ticket to Not started.', log);
       return;
     }
-    await runIncubatorTicket({ config, board, ticket, log });
+    return runIncubatorTicket({ config, board, ticket, log });
   } else {
-    await runTicket({ config, board, ticket, log });
+    return runTicket({ config, board, ticket, log });
   }
+}
+
+function heartbeat(config, phase = 'ready') {
+  let sha = '';
+  try { sha = execFileSync('git', ['-C', baseDir, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+  healingState.writeState(baseDir, 'heartbeat', {
+    pid: process.pid,
+    sha,
+    phase,
+    at: new Date().toISOString(),
+  });
+}
+
+async function healServiceFailure(config, error) {
+  const classification = classifyFailure(error, { runner: true });
+  if (classification.kind !== 'infrastructure' || classification.transient) return null;
+  const runDir = path.join(baseDir, 'runs', `service-${Date.now()}`);
+  fs.mkdirSync(runDir, { recursive: true });
+  log(`service-level infrastructure failure; invoking guarded self-healing (${error.message})`);
+  return repairRunner({ config, error, runDir, log });
+}
+
+async function healthcheck(config) {
+  execFileSync('git', ['-C', config.repoPath, 'rev-parse', '--verify', `${config.baseBranch}^{commit}`], { stdio: 'ignore' });
+  if (!Array.isArray(config.boards) || !config.boards.length) throw new Error('config.boards must contain at least one board');
+  await notion.getCurrentBot();
+  console.log('healthcheck ok: config, target repository, and Notion are reachable');
 }
 
 // Removes worktrees + branches for tickets that were merged and marked Done.
@@ -234,6 +264,8 @@ async function main() {
 
   if (cmd === 'once') {
     await tick(config, { dryRun });
+  } else if (cmd === 'healthcheck') {
+    await healthcheck(config);
   } else if (cmd === 'push') {
     await pushCmd(config, process.argv[3], process.argv[4]);
   } else if (cmd === 'cleanup') {
@@ -241,19 +273,30 @@ async function main() {
   } else if (cmd === 'loop') {
     log(`ticket-runner starting: ${config.boards.map((b) => b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
     if (checkForSelfUpdate(config)) process.exit(75);
-    await recoverStaleClaims(config);
+    try {
+      await recoverStaleClaims(config);
+    } catch (error) {
+      const repaired = await healServiceFailure(config, error);
+      if (repaired?.status === 'deployed') process.exit(75);
+      throw error;
+    }
+    heartbeat(config);
     // strictly serial: the next poll only happens after the current run ends
     for (;;) {
       try {
         if (checkForSelfUpdate(config)) process.exit(75);
-        await tick(config);
+        const outcome = await tick(config);
+        heartbeat(config);
+        if (outcome?.status === 'restart_required') process.exit(75);
       } catch (e) {
         log(`tick failed: ${e.message}`);
+        const repaired = await healServiceFailure(config, e);
+        if (repaired?.status === 'deployed') process.exit(75);
       }
       await sleep(config.pollIntervalMs);
     }
   } else {
-    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | push <shortId> [channel] | cleanup)`);
+    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | push <shortId> [channel] | cleanup)`);
     process.exit(1);
   }
 }

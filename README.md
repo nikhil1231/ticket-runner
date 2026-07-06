@@ -33,6 +33,8 @@ node runner.js once            # single tick
 node runner.js once --dry-run  # show what would be claimed, no writes
 node runner.js push <shortId>  # manually publish a worktree to its EAS channel
 node runner.js cleanup         # remove worktrees/branches of Done tickets
+node runner.js healthcheck     # read-only config/Git/Notion readiness check
+npm run setup:service          # install/reload the guarded systemd supervisor
 ```
 
 ## Workflow
@@ -50,9 +52,9 @@ node runner.js cleanup         # remove worktrees/branches of Done tickets
      worktrees.
    - **Needs info** — the agent found the ticket too vague. Edit the ticket
      body, then move it to `Not started` to requeue.
-   - **Failed** — after 2 attempts (first failure auto-requeues). Log tail is
-     in the comment, full logs under `runs/`. Move it to `Not started` to retry
-     after fixing the cause.
+   - **Failed** — after normal candidates and one bounded rescue pass fail, or
+     when the self-healing circuit breaker parks an infrastructure fault. Full
+     diagnostics remain under `runs/`.
 4. To retry anything manually: move it to `Not started` (and reset `Attempts`
    if you want a full fresh set of retries).
 
@@ -75,9 +77,13 @@ human comments are used as revision feedback.
 
 - Hard wall-clock timeout per run (25 min default) with full process-tree kill.
 - Max 2 attempts per ticket, then Failed.
+- One rescue pass after the normal model chain is exhausted.
+- Infrastructure faults do not consume ticket attempts. Transient Notion
+  failures retry locally; unknown runner defects enter guarded self-healing.
 - Serial: one ticket at a time across both boards (oldest first).
-- Agents work in a disposable worktree on their own branch; `main` is never
-  touched. Nothing is pushed.
+- App agents work in disposable worktrees; the target app's `main` is never
+  touched and feature branches are not pushed. Guarded repairs may push this
+  runner's `main` after validation.
 - On startup, `For AI` tickets stuck in `In progress` (crashed runner) are requeued or
   failed.
 - Between tickets, the runner fetches `origin/main`. A clean checkout is
@@ -85,11 +91,37 @@ human comments are used as revision feedback.
   diverged checkouts are logged and left untouched; update failures do not stop
   ticket polling.
 
+## Self-healing
+
+The runner fingerprints failures and separates app/task failures from defects in
+the runner itself. Task failures get one final context-rich rescue pass in the
+app worktree. For an unknown runner defect, Codex receives the stack trace and
+logs in an isolated `self-heal/*` worktree and must add a regression test.
+
+A runner repair deploys only when all tests and syntax checks pass, protected
+controller/configuration paths are untouched, and `origin/main` still equals the
+recorded base commit. It is pushed as one normal fast-forward commit; force-pushes
+are never used. The supervisor starts the candidate and waits for a matching
+healthy heartbeat. A failed startup is reverted automatically when remote state
+is unchanged. If another commit advances main, rollback stops rather than
+overwriting it.
+
+Repair fingerprints, pending deployments, heartbeat data, and deployment history
+live under ignored `state/`; prompts and validation logs live below the ticket's
+`runs/<id>/repair/` directory. One repair is allowed per fingerprint per 24-hour
+cooldown by default. The Notion ticket receives progress and circuit-breaker
+comments and is requeued without consuming an attempt after a successful repair.
+
+Guarded deployment is disabled unless `scripts/supervisor.js` is the active
+service entrypoint. On the Linux host, run `npm run setup:service` once after this
+upgrade; it installs the tracked unit, reloads systemd, and starts the service.
+
 ## Config
 
 `config.json`: repo path, base branch, poll interval, automatic update remote,
 run/install timeouts, max attempts, app/incubator database IDs, service-specific
-`fallbackPolicies`, and per-provider command settings. Codex runs with
+`fallbackPolicies`, `selfHealing` limits/candidates/health timeout, and
+per-provider command settings. Codex runs with
 `--sandbox workspace-write`; if
 that misbehaves on Windows, set `"sandbox": "danger-full-access"` in
 `adapters.codex` (the worktree still contains the blast radius, but nothing

@@ -10,6 +10,17 @@
   "runTimeoutMs": 1500000,
   "installTimeoutMs": 900000,
   "maxAttempts": 2,
+  "selfHealing": {
+    "enabled": true,
+    "maxRescuePasses": 1,
+    "maxRepairsPerFingerprint": 1,
+    "cooldownMs": 86400000,
+    "repairTimeoutMs": 1500000,
+    "healthTimeoutMs": 120000,
+    "repairCandidate": { "provider": "codex", "model": "" },
+    "rescueCandidate": { "provider": "codex", "model": "" },
+    "protectedPaths": []
+  },
   "fallbackPolicies": {
     "feature": [
       { "provider": "codex", "model": "" },
