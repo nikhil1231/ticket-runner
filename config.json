@@ -51,20 +51,38 @@
     "enabled": true,
     "maxRounds": 2
   },
+  "integration": {
+    "enabled": true,
+    "remote": "origin",
+    "mainBranch": "main",
+    "validationTimeoutMs": 1200000
+  },
   "boards": [
     {
       "app": "caligo",
       "databaseId": "1ccd0de6-9f64-8032-9050-e3c012ff885d",
       "appDir": "apps/caligo",
       "scope": "caligo",
-      "easChannel": "testing"
+      "easChannel": "testing",
+      "integration": {
+        "validationCommands": [
+          ["yarn", "caligo:test", "--runInBand"],
+          ["yarn", "typecheck"]
+        ]
+      }
     },
     {
       "app": "workouttracker",
       "databaseId": "cca71459-bbd1-4583-926e-5aa1d5b88982",
       "appDir": "apps/workouttracker",
       "scope": "workout",
-      "easChannel": "testing"
+      "easChannel": "testing",
+      "integration": {
+        "validationCommands": [
+          ["yarn", "workout:test", "--runInBand"],
+          ["yarn", "typecheck"]
+        ]
+      }
     }
   ],
   "adapters": {

@@ -22,21 +22,21 @@ test('a human override is one-shot and moves a successful push to Testing', asyn
   t.after(() => fs.rmSync(f.baseDir, { recursive: true, force: true }));
   const updates = [];
   const comments = [];
-  let pushArgs;
+  let admitArgs;
   const notion = {
     updatePage: async (_pageId, properties) => updates.push(properties),
     safeComment: async (_pageId, comment) => comments.push(comment),
   };
-  const eas = { pushUpdate: (args) => { pushArgs = args; return { ok: true }; } };
+  const integration = { admitTicket: async (args) => { admitArgs = args; return { status: 'deployed', compositeSha: 'stack-123' }; } };
 
-  const result = await forceDeploy({ ...f, notion, eas, log: () => {} });
+  const result = await forceDeploy({ ...f, config: { baseDir: f.baseDir }, notion, integration, log: () => {} });
 
   assert.equal(result.status, 'deployed');
   assert.deepEqual(updates[0], { 'Force deploy': { checkbox: false } });
   assert.equal(updates[1].Status.status.name, 'Testing');
-  assert.equal(pushArgs.channel, 'testing');
-  assert.match(pushArgs.message, /human override/);
-  assert.match(comments[0], /Force deployed/);
+  assert.equal(admitArgs.ticket.pageId, f.ticket.pageId);
+  assert.equal(result.compositeSha, 'stack-123');
+  assert.match(comments[0], /cumulative Testing stack/);
 });
 
 test('a failed push remains parked and requires another explicit checkbox tick', async (t) => {
@@ -48,9 +48,9 @@ test('a failed push remains parked and requires another explicit checkbox tick',
     updatePage: async (_pageId, properties) => updates.push(properties),
     safeComment: async (_pageId, comment) => comments.push(comment),
   };
-  const eas = { pushUpdate: () => ({ ok: false, error: 'details\nEAS rejected update' }) };
+  const integration = { admitTicket: async () => ({ status: 'publish_failed', error: 'details\nEAS rejected update' }) };
 
-  const result = await forceDeploy({ ...f, notion, eas, log: () => {} });
+  const result = await forceDeploy({ ...f, config: { baseDir: f.baseDir }, notion, integration, log: () => {} });
 
   assert.equal(result.status, 'failed');
   assert.equal(updates.length, 1);

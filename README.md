@@ -2,8 +2,8 @@
 
 Polls the Caligo and WorkoutTracker Notion boards for tickets flagged **For AI**,
 and the Ticket Incubator for feature briefs. It plans or implements one ticket at
-a time with headless coding CLIs in isolated git worktrees. Notion is the only
-state store.
+a time with headless coding CLIs in isolated git worktrees. Notion owns ticket
+intent; ignored local state records exact Git commits and deployed stack heads.
 
 Fallback policies are ordered provider/model candidates. Feature implementation
 and incubation use Codex, then agy Claude, Pro, Flash and GPT-OSS. Review uses agy
@@ -31,8 +31,9 @@ the next candidate. The resolver is stateless: each ticket starts at the top.
 node runner.js                 # poll loop (every 60s), one ticket at a time
 node runner.js once            # single tick
 node runner.js once --dry-run  # show what would be claimed, no writes
-node runner.js push <shortId>  # manually publish a worktree to its EAS channel
-node runner.js cleanup         # remove worktrees/branches of Done tickets
+node runner.js stack [app]     # read-only desired/deployed stack report
+node runner.js reconcile [app] # explicitly rebuild + publish cumulative stacks
+node runner.js cleanup         # prune only verified merged ticket branches
 node runner.js healthcheck     # read-only config/Git/Notion readiness check
 npm run setup:service          # install/reload the guarded systemd supervisor
 ```
@@ -46,17 +47,23 @@ npm run setup:service          # install/reload the guarded systemd supervisor
    `ai/<shortId>` under `worktrees/`, runs `yarn install`, and spawns the CLI
    with the ticket as prompt.
 3. Outcomes (always posted as a comment on the ticket):
-   - **In review** — work committed on the branch; the `Branch` field is set.
-     Review the diff in the worktree, merge it, set `Status = Done`, uncheck
-     **For AI**. Run `node runner.js cleanup` occasionally to prune merged
-     worktrees.
+   - **Testing** — AI review passed, the ticket was merged into the app's
+     generated cumulative stack, combined validation passed, and that stack was
+     published to EAS. Every Testing ticket for that app is available together.
+   - **In review** — human attention is required because review was inconclusive,
+     a Git conflict occurred, validation/deployment failed, or native changes
+     require a new testing binary. The ticket branch is retained.
    - **Needs info** — the agent found the ticket too vague. Edit the ticket
      body, then move it to `Not started` to requeue.
    - **Failed** — after normal candidates and one bounded rescue pass fail, or
      when the self-healing circuit breaker parks an infrastructure fault. Full
      diagnostics remain under `runs/`.
-4. To retry anything manually: move it to `Not started` (and reset `Attempts`
-   if you want a full fresh set of retries).
+4. After testing:
+   - Move a ticket to **Done** to authorize its individual validated merge and
+     normal push to `origin/main`. The runner then rebuilds the remaining stack.
+   - Add page comments and move it to **Not started** to remove it from the
+     deployed stack and requeue it. New non-bot comments are added to the next
+     implementation prompt.
 
 ## Ticket incubator
 
@@ -81,9 +88,14 @@ human comments are used as revision feedback.
 - Infrastructure faults do not consume ticket attempts. Transient Notion
   failures retry locally; unknown runner defects enter guarded self-healing.
 - Serial: one ticket at a time across both boards (oldest first).
-- App agents work in disposable worktrees; the target app's `main` is never
-  touched and feature branches are not pushed. Guarded repairs may push this
-  runner's `main` after validation.
+- App agents work in disposable worktrees and feature branches are never pushed.
+  Done promotion merges only that ticket in an isolated worktree, validates it,
+  verifies the remote has not advanced, and pushes without force.
+- Integration branches are disposable, local-only, rebuilt from `origin/main`,
+  and never merged into main. An atomic operation lock prevents overlapping
+  runner, reconcile, promotion, and cleanup commands.
+- Cleanup verifies the ticket commit is an ancestor of `origin/main`; a Done
+  status by itself can never delete an unmerged branch.
 - On startup, `For AI` tickets stuck in `In progress` (crashed runner) are requeued or
   failed.
 - Between tickets, the runner fetches `origin/main`. A clean checkout is
@@ -120,7 +132,8 @@ upgrade; it installs the tracked unit, reloads systemd, and starts the service.
 
 `config.json`: repo path, base branch, poll interval, automatic update remote,
 run/install timeouts, max attempts, app/incubator database IDs, service-specific
-`fallbackPolicies`, `selfHealing` limits/candidates/health timeout, and
+`fallbackPolicies`, `selfHealing` limits/candidates/health timeout, cumulative
+integration remote/main/timeout, per-board validation command arrays, and
 per-provider command settings. Codex runs with
 `--sandbox workspace-write`; if
 that misbehaves on Windows, set `"sandbox": "danger-full-access"` in
@@ -133,16 +146,18 @@ After a ticket is implemented, an AI reviewer judges the diff using the review
 policy. The exact implementation provider/model is removed from that policy, so
 review is never same-on-same.
 
-- **APPROVE** → publish the branch to the board's EAS `testing` channel and move
-  the ticket to **Testing** for you to verify on-device, then set Done.
+- **APPROVE** → rebuild `integration/<app>` from `origin/main` plus every
+  oldest-first Testing ticket and the new candidate. Tests, typechecking, and
+  EAS publishing must all succeed before the candidate moves to **Testing**.
 - **REQUEST_CHANGES** → the notes go into `Review feedback`, the ticket returns to
   **Not started**, and the next run's prompt includes that feedback. Bounded by
   `review.maxRounds` (default 2); after that it parks in **In review** for a human.
   `Attempts` is reset on a change-request so it doesn't count as an implement failure.
-- To override a parked review from Notion, tick **Force deploy** while the ticket is
-  **In review**. The runner clears the one-shot checkbox, publishes the existing
-  branch to the board's EAS channel, and moves the ticket to **Testing**. A failed
-  push leaves it **In review** with a comment; tick the box again to retry.
+- To override a parked review from Notion, tick **Force deploy** while the ticket
+  is **In review**. The runner clears the one-shot checkbox and admits the branch
+  to the cumulative stack; combined validation cannot be bypassed. Native-sensitive
+  tickets cannot enter the OTA stack: build and verify a compatible testing binary,
+  then move the ticket directly to Done to authorize normal validated promotion.
 - Per-ticket **`CLI`** and **`Model`** fields optionally prepend an implementation
   override. The actual successful candidate is written to **`Last agent`**, so
   the override remains valid on review-driven retries.
@@ -152,9 +167,22 @@ in **In review** as before).
 
 Requires a **Testing** Status option on each board (add it in the Notion UI — the
 API can't add status options), and `EXPO_TOKEN` in `.env` for headless EAS pushes.
-Only boards with an `easChannel` in config get pushed; the target needs a one-time
-`eas build --profile testing` installed on-device, and EAS Update only ships JS/asset
-changes (native changes need a rebuild).
+Each board needs an `easChannel` and validation commands in config. The target
+needs a one-time `eas build --profile testing` installed on-device. Changes to
+native projects, Expo/EAS config, config plugins, app/root dependencies, or lock
+files are conservatively treated as native-sensitive and require a rebuild.
+
+## Stack recovery
+
+- `node runner.js stack [app]` compares Notion's desired Testing tickets with
+  the last successfully deployed local state without modifying either system.
+- `node runner.js reconcile [app]` rebuilds from fetched `origin/main`; isolated
+  `push <shortId>` is refused while cumulative integration is enabled.
+- A conflicting ticket is returned to In review and excluded; compatible tickets
+  continue. Validation or EAS failure leaves the previous update active and
+  blocks new implementation work until reconciliation succeeds.
+- If a main push succeeds but the process stops before updating Notion, the next
+  poll recognizes the ticket commit on `origin/main` and finalizes idempotently.
 
 ## Engines
 

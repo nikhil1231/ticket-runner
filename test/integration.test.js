@@ -1,0 +1,287 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const integration = require('../lib/integration');
+const ticketState = require('../lib/ticket-state');
+const state = require('../lib/healing-state');
+
+function git(dir, args) {
+  return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+function fixture(t) {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-stack-'));
+  const remote = path.join(baseDir, 'origin.git');
+  const repoPath = path.join(baseDir, 'repo');
+  fs.mkdirSync(repoPath);
+  execFileSync('git', ['init', '--bare', remote], { stdio: 'ignore' });
+  git(repoPath, ['init', '-b', 'main']);
+  git(repoPath, ['config', 'user.name', 'Test']);
+  git(repoPath, ['config', 'user.email', 'test@example.com']);
+  fs.writeFileSync(path.join(repoPath, 'base.txt'), 'base\n');
+  git(repoPath, ['add', '.']);
+  git(repoPath, ['commit', '-m', 'base']);
+  git(repoPath, ['remote', 'add', 'origin', remote]);
+  git(repoPath, ['push', '-u', 'origin', 'main']);
+  t.after(() => fs.rmSync(baseDir, { recursive: true, force: true }));
+
+  const config = {
+    baseDir,
+    repoPath,
+    baseBranch: 'main',
+    installTimeoutMs: 1000,
+    integration: { enabled: true, remote: 'origin', mainBranch: 'main' },
+  };
+  const board = {
+    app: 'caligo', databaseId: 'db', appDir: 'apps/caligo', scope: 'caligo', easChannel: 'testing',
+    integration: { validationCommands: [] },
+  };
+  return { baseDir, repoPath, remote, config, board };
+}
+
+function makePage(id, title, createdTime, status = 'Testing') {
+  return {
+    id,
+    created_time: createdTime,
+    properties: {
+      Name: { title: [{ plain_text: title }] },
+      Status: { status: { name: status } },
+      'For AI': { checkbox: true },
+    },
+  };
+}
+
+function addTicket(f, page, file, content) {
+  const shortId = page.id.replace(/-/g, '').slice(-12);
+  const branch = `ai/${shortId}`;
+  git(f.repoPath, ['switch', '-c', branch, 'main']);
+  fs.writeFileSync(path.join(f.repoPath, file), content);
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', `${shortId}: change`]);
+  const headSha = git(f.repoPath, ['rev-parse', 'HEAD']);
+  git(f.repoPath, ['switch', 'main']);
+  ticketState.writeMeta(f.baseDir, shortId, {
+    pageId: page.id,
+    shortId,
+    app: f.board.app,
+    branch,
+    dir: path.join(f.baseDir, 'worktrees', shortId),
+    title: page.properties.Name.title[0].plain_text,
+    createdTime: page.created_time,
+    baseSha: git(f.repoPath, ['rev-parse', 'main']),
+    headSha,
+    changedFiles: [file],
+    nativeSensitiveFiles: [],
+  });
+  return { shortId, branch, headSha };
+}
+
+function notionFixture(pages) {
+  const updates = [];
+  const comments = [];
+  return {
+    updates,
+    comments,
+    queryDatabase: async () => pages.filter((page) => page.properties.Status.status.name === 'Testing'),
+    updatePage: async (id, properties) => {
+      updates.push({ id, properties });
+      const page = pages.find((item) => item.id === id);
+      if (page && properties.Status) page.properties.Status = properties.Status;
+    },
+    safeComment: async (id, message) => comments.push({ id, message }),
+  };
+}
+
+const services = { installDeps: () => {}, runValidation: () => {} };
+
+test('cumulative stack is oldest-first and rebuilds after tickets leave Testing', async (t) => {
+  const f = fixture(t);
+  const newer = makePage('00000000-0000-0000-0000-000000000002', 'Newer', '2026-01-02T00:00:00Z');
+  const older = makePage('00000000-0000-0000-0000-000000000001', 'Older', '2026-01-01T00:00:00Z');
+  const a = addTicket(f, older, 'older.txt', 'older\n');
+  const b = addTicket(f, newer, 'newer.txt', 'newer\n');
+  const notion = notionFixture([newer, older]);
+  const publishes = [];
+  const eas = { pushUpdate: (args) => { publishes.push(args); return { ok: true }; } };
+
+  const first = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.equal(first.status, 'deployed');
+  assert.deepEqual(first.tickets.map((item) => item.title), ['Older', 'Newer']);
+  assert.equal(git(first.branch ? path.join(f.baseDir, 'worktrees', 'integration-caligo') : f.repoPath, ['merge-base', '--is-ancestor', a.headSha, first.compositeSha]), '');
+  assert.equal(git(path.join(f.baseDir, 'worktrees', 'integration-caligo'), ['merge-base', '--is-ancestor', b.headSha, first.compositeSha]), '');
+
+  older.properties.Status.status.name = 'Not started';
+  const second = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.deepEqual(second.tickets.map((item) => item.title), ['Newer']);
+  assert.equal(publishes.length, 2);
+  assert.throws(() => git(path.join(f.baseDir, 'worktrees', 'integration-caligo'), ['merge-base', '--is-ancestor', a.headSha, second.compositeSha]));
+
+  newer.properties.Status.status.name = 'Done';
+  const empty = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.deepEqual(empty.tickets, []);
+  assert.equal(empty.compositeSha, empty.baseSha);
+  assert.equal(publishes.length, 3);
+});
+
+test('a conflicting ticket is parked while compatible tickets still deploy', async (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.repoPath, 'shared.txt'), 'start\n');
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', 'shared base']);
+  git(f.repoPath, ['push', 'origin', 'main']);
+  const firstPage = makePage('00000000-0000-0000-0000-000000000011', 'First', '2026-01-01T00:00:00Z');
+  const secondPage = makePage('00000000-0000-0000-0000-000000000012', 'Second', '2026-01-02T00:00:00Z');
+  addTicket(f, firstPage, 'shared.txt', 'first\n');
+  addTicket(f, secondPage, 'shared.txt', 'second\n');
+  const notion = notionFixture([firstPage, secondPage]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.deepEqual(result.tickets.map((item) => item.title), ['First']);
+  assert.equal(secondPage.properties.Status.status.name, 'In review');
+  assert.match(notion.comments[0].message, /conflicted/i);
+  assert.match(notion.comments[0].message, /shared\.txt/);
+});
+
+test('Done promotion merges only the ticket, pushes main, and finalizes Notion', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000021', 'Promote me', '2026-01-01T00:00:00Z', 'Done');
+  const ticketRef = addTicket(f, page, 'feature.txt', 'feature\n');
+  const notion = notionFixture([page]);
+  const ticket = require('../lib/ticket').extractTicket(page);
+
+  const result = await integration.promoteTicket({ ...f, ticket, notion, services, log: () => {} });
+  assert.equal(result.status, 'merged');
+  git(f.repoPath, ['fetch', 'origin', 'main']);
+  assert.equal(git(f.repoPath, ['merge-base', '--is-ancestor', ticketRef.headSha, 'origin/main']), '');
+  assert.equal(notion.updates.at(-1).properties['For AI'].checkbox, false);
+  assert.match(notion.comments.at(-1).message, /Merged automatically/);
+  assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
+});
+
+test('native-sensitive detection blocks config, native, plugin, and dependency changes', () => {
+  const board = { appDir: 'apps/caligo' };
+  assert.deepEqual(integration.nativeSensitiveFiles([
+    'apps/caligo/src/view.tsx',
+    'apps/caligo/app.json',
+    'apps/caligo/ios/App.swift',
+    'apps/caligo/plugins/with-thing.js',
+    'apps/caligo/package.json',
+    'yarn.lock',
+  ], board), [
+    'apps/caligo/app.json',
+    'apps/caligo/ios/App.swift',
+    'apps/caligo/plugins/with-thing.js',
+    'apps/caligo/package.json',
+    'yarn.lock',
+  ]);
+});
+
+test('stack status is read-only when metadata is missing', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000031', 'Missing', '2026-01-01T00:00:00Z');
+  const notion = notionFixture([page]);
+  const result = await integration.stackStatus({ ...f, notion });
+  assert.equal(result.desired.length, 1);
+  assert.match(result.desired[0].issue, /missing metadata/);
+  assert.equal(notion.updates.length, 0);
+  assert.equal(notion.comments.length, 0);
+  assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
+});
+
+test('validation and EAS failures preserve the previous deployment state', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000041', 'Risky', '2026-01-01T00:00:00Z');
+  addTicket(f, page, 'safe.txt', 'safe\n');
+  const notion = notionFixture([page]);
+  let publishes = 0;
+  const eas = { pushUpdate: () => { publishes += 1; return { ok: false, error: 'EAS unavailable' }; } };
+
+  const invalid = await integration.reconcileBoard({
+    ...f, notion, eas, log: () => {},
+    services: { installDeps: () => {}, runValidation: () => { throw new Error('tests failed'); } },
+  });
+  assert.equal(invalid.status, 'validation_failed');
+  assert.equal(publishes, 0);
+  assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
+
+  const unpublished = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.equal(unpublished.status, 'publish_failed');
+  assert.equal(publishes, 1);
+  assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
+});
+
+test('promotion leaves Done pending when origin main advances', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000051', 'Race', '2026-01-01T00:00:00Z', 'Done');
+  addTicket(f, page, 'race.txt', 'race\n');
+  const notion = notionFixture([page]);
+  const ticket = require('../lib/ticket').extractTicket(page);
+  const actualBase = git(f.repoPath, ['rev-parse', 'origin/main']);
+  let fetches = 0;
+  const result = await integration.promoteTicket({
+    ...f, ticket, notion, log: () => {},
+    services: {
+      installDeps: () => {},
+      runValidation: () => {},
+      fetchBranch: () => (++fetches === 1 ? actualBase : 'f'.repeat(40)),
+    },
+  });
+  assert.equal(result.status, 'remote_advanced');
+  assert.equal(page.properties.Status.status.name, 'Done');
+  assert.equal(notion.updates.length, 0);
+  assert.notEqual(ticketState.readMeta(f.baseDir, ticket.shortId), null);
+});
+
+test('promotion recovers idempotently when the ticket commit is already on main', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000061', 'Recovered', '2026-01-01T00:00:00Z', 'Done');
+  const ref = addTicket(f, page, 'recovered.txt', 'recovered\n');
+  git(f.repoPath, ['merge', '--no-ff', '--no-edit', ref.branch]);
+  git(f.repoPath, ['push', 'origin', 'main']);
+  const notion = notionFixture([page]);
+  const ticket = require('../lib/ticket').extractTicket(page);
+
+  const result = await integration.promoteTicket({ ...f, ticket, notion, services, log: () => {} });
+  assert.equal(result.status, 'already_merged');
+  assert.equal(notion.updates[0].properties['For AI'].checkbox, false);
+  assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
+});
+
+test('missing stack metadata parks the ticket instead of silently deploying it', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000071', 'Lost branch', '2026-01-01T00:00:00Z');
+  const notion = notionFixture([page]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.equal(result.status, 'deployed');
+  assert.equal(page.properties.Status.status.name, 'In review');
+  assert.match(notion.comments[0].message, /metadata is missing/i);
+  assert.deepEqual(result.tickets, []);
+});
+
+test('first reconciliation adopts legacy metadata from an existing local branch', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000081', 'Legacy', '2026-01-01T00:00:00Z');
+  const ref = addTicket(f, page, 'legacy.txt', 'legacy\n');
+  ticketState.writeMeta(f.baseDir, ref.shortId, {
+    pageId: page.id,
+    app: f.board.app,
+    branch: ref.branch,
+    dir: path.join(f.baseDir, 'worktrees', ref.shortId),
+    title: 'Legacy',
+  });
+  const notion = notionFixture([page]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.equal(result.tickets[0].headSha, ref.headSha);
+  const adopted = ticketState.readMeta(f.baseDir, ref.shortId);
+  assert.equal(adopted.headSha, ref.headSha);
+  assert.deepEqual(adopted.changedFiles, ['legacy.txt']);
+});

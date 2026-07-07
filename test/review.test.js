@@ -100,3 +100,15 @@ test('buildPrompt omits the feedback block on a first attempt', () => {
   });
   assert.doesNotMatch(prompt, /changes were requested/i);
 });
+
+test('buildPrompt includes new human comments as implementation feedback', () => {
+  const prompt = buildPrompt({
+    ticket: { title: 'Tune chimes', reviewFeedback: '' },
+    body: 'Add sound controls',
+    board: { appDir: 'apps/workouttracker', scope: 'workout' },
+    humanComments: ['The mute option resets after relaunch.', 'Keep vibration enabled.'],
+  });
+  assert.match(prompt, /New human feedback/);
+  assert.match(prompt, /resets after relaunch/);
+  assert.match(prompt, /Keep vibration enabled/);
+});
