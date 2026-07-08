@@ -216,6 +216,38 @@ test('validation and EAS failures preserve the previous deployment state', async
   assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
 });
 
+test('fetch failure blocks stack reconciliation without clearing previous deployment', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000045', 'Queued', '2026-01-01T00:00:00Z');
+  addTicket(f, page, 'queued.txt', 'queued\n');
+  const notion = notionFixture([page]);
+  const previous = { status: 'deployed', baseSha: 'a'.repeat(40), tickets: [{ title: 'Previous' }] };
+  state.writeState(f.baseDir, 'integration-caligo', previous);
+  let publishes = 0;
+  const eas = { pushUpdate: () => { publishes += 1; return { ok: true }; } };
+  const logs = [];
+
+  const result = await integration.reconcileBoard({
+    ...f,
+    notion,
+    eas,
+    log: (message) => logs.push(message),
+    services: {
+      ...services,
+      fetchBranch: () => {
+        throw new Error('fatal: unable to access remote: Recv failure: Connection reset by peer');
+      },
+    },
+  });
+
+  assert.equal(result.status, 'fetch_failed');
+  assert.match(result.error, /Connection reset by peer/);
+  assert.equal(publishes, 0);
+  assert.equal(notion.updates.length, 0);
+  assert.deepEqual(state.readState(f.baseDir, 'integration-caligo', null), previous);
+  assert.match(logs[0], /testing stack fetch failed/);
+});
+
 test('promotion leaves Done pending when origin main advances', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000051', 'Race', '2026-01-01T00:00:00Z', 'Done');

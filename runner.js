@@ -163,7 +163,7 @@ async function processPromotions(config) {
 async function reconcileBoards(config, onlyApp) {
   for (const board of config.boards.filter((item) => !onlyApp || item.app === onlyApp)) {
     const result = await integration.reconcileBoard({ config, board, notion, eas, log });
-    if (['validation_failed', 'publish_failed'].includes(result.status)) {
+    if (['fetch_failed', 'validation_failed', 'publish_failed'].includes(result.status)) {
       log(`${board.app} stack reconciliation blocked: ${result.error || result.status}`);
       return { status: 'blocked', board: board.app, reason: result.status };
     }
