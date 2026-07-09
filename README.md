@@ -65,6 +65,12 @@ npm run setup:service          # install/reload the guarded systemd supervisor
      deployed stack and requeue it. New non-bot comments are added to the next
      implementation prompt.
 
+Query-only tickets are handled without an implementation worktree. Prefix the
+title with `[Query]` (for example, `[Query] Volume too low?`) or start the body
+with `Query:`. The runner inspects the ticket context, appends an **AI query
+answer** section to the page body, asks at most one follow-up when needed, and
+parks the ticket in **Needs info**.
+
 ## Ticket incubator
 
 1. Create a ticket in **Ticket Incubator**, add a title/body, select `App`, and
