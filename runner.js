@@ -17,6 +17,7 @@ const { execFileSync } = require('child_process');
 const healingState = require('./lib/healing-state');
 const { classifyFailure } = require('./lib/failure');
 const { repairRunner } = require('./lib/self-heal');
+const { resolveProjects, findProject, resolveIncubatorProject } = require('./lib/projects');
 
 const baseDir = __dirname;
 
@@ -35,7 +36,7 @@ function loadEnv() {
 
 function loadConfig() {
   const config = JSON.parse(fs.readFileSync(path.join(baseDir, 'config.json'), 'utf8'));
-  config.repoPath = path.resolve(baseDir, config.repoPath);
+  if (config.repoPath) config.repoPath = path.resolve(baseDir, config.repoPath);
   config.baseDir = baseDir;
   return config;
 }
@@ -54,7 +55,7 @@ const QUEUE_FILTER = {
 
 async function findCandidates(config) {
   const all = [];
-  for (const board of config.boards) {
+  for (const board of config.projects) {
     const pages = await notion.queryDatabase(board.databaseId, QUEUE_FILTER);
     for (const page of pages) all.push({ board, page, ticket: extractTicket(page) });
   }
@@ -64,7 +65,7 @@ async function findCandidates(config) {
     });
     for (const page of pages) {
       const ticket = extractIncubatorTicket(page);
-      const board = config.boards.find((item) => item.app === ticket.app);
+      const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
       all.push({ type: 'incubator', board, page, ticket });
     }
   }
@@ -72,10 +73,8 @@ async function findCandidates(config) {
   return all;
 }
 
-// Single-runner assumption: any For AI ticket still "In progress" at startup is an orphan
-// from a crash or forced shutdown.
 async function recoverStaleClaims(config) {
-  for (const board of config.boards) {
+  for (const board of config.projects) {
     const pages = await notion.queryDatabase(board.databaseId, {
       and: [
         { property: 'For AI', checkbox: { equals: true } },
@@ -85,13 +84,13 @@ async function recoverStaleClaims(config) {
     for (const page of pages) {
       const ticket = extractTicket(page);
       if (ticket.attempts < config.maxAttempts) {
-        log(`stale claim "${ticket.title}" (${board.app}) — requeuing`);
+        log(`stale claim "${ticket.title}" (${board.key || board.app}) - requeuing`);
         await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Not started' } } });
-        await notion.safeComment(ticket.pageId, `♻ Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`, log);
+        await notion.safeComment(ticket.pageId, `Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`, log);
       } else {
-        log(`stale claim "${ticket.title}" (${board.app}) — max attempts reached, marking Failed`);
+        log(`stale claim "${ticket.title}" (${board.key || board.app}) - max attempts reached, marking Failed`);
         await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Failed' } } });
-        await notion.safeComment(ticket.pageId, `❌ Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`, log);
+        await notion.safeComment(ticket.pageId, `Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`, log);
       }
     }
   }
@@ -102,7 +101,7 @@ async function recoverStaleClaims(config) {
     for (const page of pages) {
       const ticket = extractIncubatorTicket(page);
       const status = recoveryStatus(ticket, config.maxAttempts);
-      log(`stale incubator claim "${ticket.title}" — ${status === 'Not started' ? 'requeuing' : 'marking Failed'}`);
+      log(`stale incubator claim "${ticket.title}" - ${status === 'Not started' ? 'requeuing' : 'marking Failed'}`);
       await notion.updatePage(ticket.pageId, { Status: { status: { name: status } } });
       await notion.safeComment(ticket.pageId, status === 'Not started'
         ? `Runner restarted during planning (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`
@@ -118,13 +117,13 @@ async function processIncubatorHandoffs(config) {
   });
   for (const page of pages) {
     const ticket = extractIncubatorTicket(page);
-    const board = config.boards.find((item) => item.app === ticket.app);
+    const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
     await handoffTicket({ config, ticket, board, log });
   }
 }
 
 async function processForceDeploys(config) {
-  for (const board of config.boards) {
+  for (const board of config.projects) {
     const pages = await notion.queryDatabase(board.databaseId, {
       and: [
         { property: 'Status', status: { equals: 'In review' } },
@@ -140,7 +139,7 @@ async function processForceDeploys(config) {
 
 async function processPromotions(config) {
   const pending = [];
-  for (const board of config.boards) {
+  for (const board of config.projects) {
     const pages = await notion.queryDatabase(board.databaseId, {
       and: [
         { property: 'For AI', checkbox: { equals: true } },
@@ -161,11 +160,11 @@ async function processPromotions(config) {
 }
 
 async function reconcileBoards(config, onlyApp) {
-  for (const board of config.boards.filter((item) => !onlyApp || item.app === onlyApp)) {
+  for (const board of config.projects.filter((item) => !onlyApp || item.key === onlyApp || item.app === onlyApp)) {
     const result = await integration.reconcileBoard({ config, board, notion, eas, log });
     if (['fetch_failed', 'validation_failed', 'publish_failed'].includes(result.status)) {
-      log(`${board.app} stack reconciliation blocked: ${result.error || result.status}`);
-      return { status: 'blocked', board: board.app, reason: result.status };
+      log(`${board.key || board.app} stack reconciliation blocked: ${result.error || result.status}`);
+      return { status: 'blocked', board: board.key || board.app, reason: result.status };
     }
   }
   return { status: 'ok' };
@@ -186,23 +185,22 @@ async function tick(config, { dryRun = false } = {}) {
     return;
   }
   log(`queue (${candidates.length}): ${candidates.map((c) => c.type === 'incubator'
-    ? `"${c.ticket.title}" [incubator/${c.ticket.app || 'no app'}, attempt ${c.ticket.attempts}]`
-    : `"${c.ticket.title}" [${c.board.app}/${c.ticket.cli || 'policy default'}, attempt ${c.ticket.attempts}]`).join('; ')}`);
+    ? `"${c.ticket.title}" [incubator/${c.ticket.app || 'no project'}, attempt ${c.ticket.attempts}]`
+    : `"${c.ticket.title}" [${c.board.key || c.board.app}/${c.ticket.cli || 'policy default'}, attempt ${c.ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
-    log(`dry run — would claim "${candidates[0].ticket.title}"`);
+    log(`dry run - would claim "${candidates[0].ticket.title}"`);
     return;
   }
   const { board, ticket } = candidates[0];
   if (candidates[0].type === 'incubator') {
     if (!board) {
       await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Needs info' } } });
-      await notion.safeComment(ticket.pageId, 'Select Caligo or WorkoutTracker in App, then return this ticket to Not started.', log);
+      await notion.safeComment(ticket.pageId, 'Select a Project, then return this ticket to Not started.', log);
       return;
     }
     return runIncubatorTicket({ config, board, ticket, log });
-  } else {
-    return runTicket({ config, board, ticket, log });
   }
+  return runTicket({ config, board, ticket, log });
 }
 
 function heartbeat(config, phase = 'ready') {
@@ -226,22 +224,24 @@ async function healServiceFailure(config, error) {
 }
 
 async function healthcheck(config) {
-  execFileSync('git', ['-C', config.repoPath, 'rev-parse', '--verify', `${config.baseBranch}^{commit}`], { stdio: 'ignore' });
-  if (!Array.isArray(config.boards) || !config.boards.length) throw new Error('config.boards must contain at least one board');
-  for (const board of config.boards) {
+  if (!Array.isArray(config.projects) || !config.projects.length) throw new Error('config.projects must contain at least one project');
+  for (const board of config.projects) {
+    execFileSync('git', ['-C', board.repoPath, 'rev-parse', '--verify', `${board.baseBranch}^{commit}`], { stdio: 'ignore' });
     if (integration.integrationSettings(config, board).enabled) {
-      if (!board.easChannel) throw new Error(`${board.app}: easChannel is required for cumulative integration`);
-      const commands = board.integration?.validationCommands;
+      const publisher = board.publisher || {};
+      if (publisher.type === 'eas-update' && !(publisher.channel || board.easChannel)) {
+        throw new Error(`${board.key || board.app}: EAS channel is required for eas-update publishing`);
+      }
+      const commands = board.validationCommands || board.integration?.validationCommands;
       if (!Array.isArray(commands) || !commands.length || commands.some((command) => !Array.isArray(command) || !command.length)) {
-        throw new Error(`${board.app}: integration.validationCommands must contain command arrays`);
+        throw new Error(`${board.key || board.app}: validationCommands must contain command arrays`);
       }
     }
   }
   await notion.getCurrentBot();
-  console.log('healthcheck ok: config, target repository, and Notion are reachable');
+  console.log('healthcheck ok: config, target repositories, and Notion are reachable');
 }
 
-// Removes worktrees + branches for tickets that were merged and marked Done.
 async function cleanup(config) {
   const dir = path.join(baseDir, 'worktrees');
   if (!fs.existsSync(dir)) {
@@ -259,35 +259,31 @@ async function cleanup(config) {
       continue;
     }
     if (status === 'Done') {
-      const board = config.boards.find((item) => item.app === meta.app);
+      const board = findProject(config, meta.projectKey || meta.app);
       let headSha = meta.headSha;
       try {
-        if (!board) throw new Error(`unknown app ${meta.app}`);
+        if (!board) throw new Error(`unknown project ${meta.projectKey || meta.app}`);
         const settings = integration.integrationSettings(config, board);
-        worktrees.fetchBranch(config.repoPath, settings.remote, settings.mainBranch);
-        if (!headSha) headSha = worktrees.commitRef(config.repoPath, meta.branch);
-        if (!worktrees.isAncestor(config.repoPath, headSha, `${settings.remote}/${settings.mainBranch}`)) {
-          log(`keeping ${meta.branch} ("${meta.title}") — Done but not merged to ${settings.remote}/${settings.mainBranch}`);
+        worktrees.fetchBranch(board.repoPath, settings.remote, settings.mainBranch);
+        if (!headSha) headSha = worktrees.commitRef(board.repoPath, meta.branch);
+        if (!worktrees.isAncestor(board.repoPath, headSha, `${settings.remote}/${settings.mainBranch}`)) {
+          log(`keeping ${meta.branch} ("${meta.title}") - Done but not merged to ${settings.remote}/${settings.mainBranch}`);
           continue;
         }
       } catch (error) {
-        log(`keeping ${meta.branch} ("${meta.title}") — cannot verify merge (${error.message})`);
+        log(`keeping ${meta.branch} ("${meta.title}") - cannot verify merge (${error.message})`);
         continue;
       }
       log(`cleaning up ${meta.branch} ("${meta.title}")`);
-      worktrees.removeWorktree({ repoPath: config.repoPath, dir: meta.dir, branch: meta.branch, ignoreErrors: true });
+      worktrees.removeWorktree({ repoPath: board.repoPath, dir: meta.dir, branch: meta.branch, ignoreErrors: true });
       ticketState.removeMeta(baseDir, meta.shortId || path.basename(file, '.json'));
     } else {
-      log(`keeping ${meta.branch} ("${meta.title}") — Status is "${status}"`);
+      log(`keeping ${meta.branch} ("${meta.title}") - Status is "${status}"`);
     }
   }
 }
 
-// Manually publish a worktree's current code to its board's EAS channel.
 async function pushCmd(config, shortId, channelOverride) {
-  if (integration.integrationSettings(config, config.boards[0]).enabled) {
-    throw new Error('isolated push is disabled while cumulative integration is enabled; use `node runner.js reconcile [app]`');
-  }
   if (!shortId) {
     throw new Error('usage: node runner.js push <shortId> [channel]');
   }
@@ -296,12 +292,20 @@ async function pushCmd(config, shortId, channelOverride) {
     throw new Error(`no worktree metadata for ${shortId} (looked in worktrees/${shortId}.json)`);
   }
   const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-  const board = config.boards.find((b) => b.app === meta.app);
-  const channel = channelOverride || (board && board.easChannel);
-  if (!board || !channel) {
-    throw new Error(`no EAS channel configured for app "${meta.app}" (set easChannel in config or pass one)`);
+  const board = findProject(config, meta.projectKey || meta.app);
+  if (!board) throw new Error(`unknown project "${meta.projectKey || meta.app}"`);
+  const publisher = board.publisher || {};
+  const channel = channelOverride || (publisher.channel || board.easChannel);
+  if (integration.integrationSettings(config, board).enabled) {
+    throw new Error('isolated push is disabled while cumulative integration is enabled; use `node runner.js reconcile [project]`');
   }
-  const res = eas.pushUpdate({ worktreeDir: meta.dir, appDir: board.appDir, channel, message: `${board.scope}: ${meta.title} [${meta.branch}]`, log });
+  if (publisher.type !== 'eas-update') {
+    throw new Error(`isolated push only supports eas-update projects (project "${meta.projectKey || meta.app}" uses ${publisher.type || 'none'})`);
+  }
+  if (!channel) {
+    throw new Error(`no EAS channel configured for project "${meta.projectKey || meta.app}" (set publisher channel or pass one)`);
+  }
+  const res = eas.pushUpdate({ worktreeDir: meta.dir, appDir: board.workdir || board.appDir || '.', channel, message: `${board.scope}: ${meta.title} [${meta.branch}]`, log });
   if (!res.ok) throw new Error(`EAS push failed: ${res.error || 'unknown error'}`);
   log(`pushed ${meta.branch} to "${channel}"`);
 }
@@ -341,6 +345,7 @@ async function main() {
   }
   notion.setToken(process.env.NOTION_TOKEN);
   const config = loadConfig();
+  await resolveProjects(config, notion);
 
   const cmd = process.argv[2] || 'loop';
   const dryRun = process.argv.includes('--dry-run');
@@ -356,16 +361,16 @@ async function main() {
     await withOperationLock(baseDir, () => cleanup(config));
   } else if (cmd === 'reconcile') {
     const app = process.argv[3];
-    if (app && !config.boards.some((board) => board.app === app)) throw new Error(`unknown app: ${app}`);
+    if (app && !config.projects.some((board) => board.key === app || board.app === app)) throw new Error(`unknown project: ${app}`);
     const result = await withOperationLock(baseDir, () => reconcileBoards(config, app));
     if (result.status === 'blocked') throw new Error(`${result.board} reconciliation failed: ${result.reason}`);
   } else if (cmd === 'stack') {
     const app = process.argv[3];
-    const boards = config.boards.filter((board) => !app || board.app === app);
-    if (!boards.length) throw new Error(`unknown app: ${app}`);
+    const boards = config.projects.filter((board) => !app || board.key === app || board.app === app);
+    if (!boards.length) throw new Error(`unknown project: ${app}`);
     for (const board of boards) console.log(JSON.stringify(await integration.stackStatus({ config, board, notion }), null, 2));
   } else if (cmd === 'loop') {
-    log(`ticket-runner starting: ${config.boards.map((b) => b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
+    log(`ticket-runner starting: ${config.projects.map((b) => b.key || b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
     if (checkForSelfUpdate(config)) process.exit(75);
     try {
       await recoverStaleClaims(config);
@@ -375,7 +380,6 @@ async function main() {
       throw error;
     }
     heartbeat(config);
-    // strictly serial: the next poll only happens after the current run ends
     for (;;) {
       try {
         if (checkForSelfUpdate(config)) process.exit(75);
@@ -394,7 +398,7 @@ async function main() {
       await sleep(config.pollIntervalMs);
     }
   } else {
-    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [app] | reconcile [app] | cleanup)`);
+    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [project] | reconcile [project] | cleanup)`);
     process.exit(1);
   }
 }

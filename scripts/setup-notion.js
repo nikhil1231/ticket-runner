@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const notion = require('../lib/notion');
+const { resolveProjects } = require('../lib/projects');
 
 const baseDir = path.resolve(__dirname, '..');
 const config = JSON.parse(fs.readFileSync(path.join(baseDir, 'config.json'), 'utf8'));
@@ -44,23 +46,42 @@ async function addProperties(databaseId, properties) {
   return dataSource(databaseId);
 }
 
+async function ensureSelectOptions(databaseId, propertyName, options) {
+  let source = await dataSource(databaseId);
+  const select = source.properties[propertyName]?.select;
+  if (!select) return source;
+  const existing = new Set(select.options.map((option) => option.name));
+  const additions = options.filter((option) => !existing.has(option.name));
+  if (!additions.length) return source;
+  await request('PATCH', `/data_sources/${source.id}`, {
+    properties: {
+      [propertyName]: {
+        select: { options: [...select.options.map(({ id }) => ({ id })), ...additions] },
+      },
+    },
+  });
+  return dataSource(databaseId);
+}
+
 async function setupAppBoard(board) {
   await addProperties(board.databaseId, {
     'Last agent': { rich_text: {} },
     'Force deploy': { checkbox: {} },
   });
-  console.log(`${board.app}: Last agent + Force deploy ready`);
+  console.log(`${board.key || board.app}: Last agent + Force deploy ready`);
 }
 
-async function setupIncubator() {
+async function setupIncubator(projects) {
+  const projectOptions = projects.map((project, index) => ({
+    name: project.key || project.app,
+    color: ['blue', 'green', 'purple', 'yellow', 'pink', 'orange', 'gray'][index % 7],
+  }));
   let source = await addProperties(config.incubator.databaseId, {
-    App: { select: { options: [
-      { name: 'caligo', color: 'blue' },
-      { name: 'workouttracker', color: 'green' },
-    ] } },
+    'Project key': { select: { options: projectOptions } },
     Attempts: { number: { format: 'number' } },
     'Last agent': { rich_text: {} },
   });
+  source = await ensureSelectOptions(config.incubator.databaseId, 'Project key', projectOptions);
   const status = source.properties.Status?.status;
   if (!status) throw new Error('Ticket Incubator is missing a Status property');
   const additions = [
@@ -83,8 +104,12 @@ async function setupIncubator() {
 async function main() {
   loadEnv();
   if (!process.env.NOTION_TOKEN) throw new Error('NOTION_TOKEN is not set');
-  for (const board of config.boards) await setupAppBoard(board);
-  await setupIncubator();
+  config.baseDir = baseDir;
+  if (config.repoPath) config.repoPath = path.resolve(baseDir, config.repoPath);
+  notion.setToken(process.env.NOTION_TOKEN);
+  const projects = await resolveProjects(config, notion);
+  for (const board of projects) await setupAppBoard(board);
+  await setupIncubator(projects);
 }
 
 main().catch((error) => {

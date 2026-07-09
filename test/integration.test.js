@@ -40,8 +40,18 @@ function fixture(t) {
   const board = {
     app: 'caligo', databaseId: 'db', appDir: 'apps/caligo', scope: 'caligo', easChannel: 'testing',
     integration: { validationCommands: [] },
+    stackBlockPatterns: [
+      'package.json', 'yarn.lock', 'package-lock.json', 'pnpm-lock.yaml',
+      'apps/caligo/package.json', 'apps/caligo/app.json', 'apps/caligo/app.config.js',
+      'apps/caligo/app.config.ts', 'apps/caligo/eas.json', 'apps/caligo/ios/**',
+      'apps/caligo/android/**', 'apps/caligo/plugins/**',
+    ],
   };
   return { baseDir, repoPath, remote, config, board };
+}
+
+function integrationDir(f) {
+  return path.join(f.baseDir, 'worktrees', 'caligo', 'integration-caligo');
 }
 
 function makePage(id, title, createdTime, status = 'Testing') {
@@ -97,7 +107,7 @@ function notionFixture(pages) {
   };
 }
 
-const services = { installDeps: () => {}, runValidation: () => {} };
+const services = { runSetup: () => {}, runValidation: () => {} };
 
 test('cumulative stack is oldest-first and rebuilds after tickets leave Testing', async (t) => {
   const f = fixture(t);
@@ -112,14 +122,14 @@ test('cumulative stack is oldest-first and rebuilds after tickets leave Testing'
   const first = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
   assert.equal(first.status, 'deployed');
   assert.deepEqual(first.tickets.map((item) => item.title), ['Older', 'Newer']);
-  assert.equal(git(first.branch ? path.join(f.baseDir, 'worktrees', 'integration-caligo') : f.repoPath, ['merge-base', '--is-ancestor', a.headSha, first.compositeSha]), '');
-  assert.equal(git(path.join(f.baseDir, 'worktrees', 'integration-caligo'), ['merge-base', '--is-ancestor', b.headSha, first.compositeSha]), '');
+  assert.equal(git(first.branch ? integrationDir(f) : f.repoPath, ['merge-base', '--is-ancestor', a.headSha, first.compositeSha]), '');
+  assert.equal(git(integrationDir(f), ['merge-base', '--is-ancestor', b.headSha, first.compositeSha]), '');
 
   older.properties.Status.status.name = 'Not started';
   const second = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
   assert.deepEqual(second.tickets.map((item) => item.title), ['Newer']);
   assert.equal(publishes.length, 2);
-  assert.throws(() => git(path.join(f.baseDir, 'worktrees', 'integration-caligo'), ['merge-base', '--is-ancestor', a.headSha, second.compositeSha]));
+  assert.throws(() => git(integrationDir(f), ['merge-base', '--is-ancestor', a.headSha, second.compositeSha]));
 
   newer.properties.Status.status.name = 'Done';
   const empty = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
@@ -165,7 +175,13 @@ test('Done promotion merges only the ticket, pushes main, and finalizes Notion',
 });
 
 test('native-sensitive detection blocks config, native, plugin, and dependency changes', () => {
-  const board = { appDir: 'apps/caligo' };
+  const board = {
+    stackBlockPatterns: [
+      'package.json', 'yarn.lock', 'package-lock.json', 'pnpm-lock.yaml',
+      'apps/caligo/package.json', 'apps/caligo/app.json', 'apps/caligo/ios/**',
+      'apps/caligo/plugins/**',
+    ],
+  };
   assert.deepEqual(integration.nativeSensitiveFiles([
     'apps/caligo/src/view.tsx',
     'apps/caligo/app.json',
@@ -180,6 +196,28 @@ test('native-sensitive detection blocks config, native, plugin, and dependency c
     'apps/caligo/package.json',
     'yarn.lock',
   ]);
+});
+
+test('validation-only publisher composes a testing stack without EAS', async (t) => {
+  const f = fixture(t);
+  f.board = {
+    ...f.board,
+    key: 'leetcode-senpai',
+    app: 'leetcode-senpai',
+    scope: 'leetcode',
+    publisher: { type: 'none' },
+    easChannel: '',
+    stackBlockPatterns: [],
+  };
+  const page = makePage('00000000-0000-0000-0000-000000000091', 'Generic', '2026-01-01T00:00:00Z');
+  addTicket(f, page, 'generic.txt', 'generic\n');
+  const notion = notionFixture([page]);
+  const eas = { pushUpdate: () => { throw new Error('EAS should not run'); } };
+
+  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  assert.equal(result.status, 'deployed');
+  assert.equal(result.publisher, 'none');
+  assert.equal(result.projectKey, 'leetcode-senpai');
 });
 
 test('stack status is read-only when metadata is missing', async (t) => {
@@ -204,7 +242,7 @@ test('validation and EAS failures preserve the previous deployment state', async
 
   const invalid = await integration.reconcileBoard({
     ...f, notion, eas, log: () => {},
-    services: { installDeps: () => {}, runValidation: () => { throw new Error('tests failed'); } },
+    services: { runSetup: () => {}, runValidation: () => { throw new Error('tests failed'); } },
   });
   assert.equal(invalid.status, 'validation_failed');
   assert.equal(publishes, 0);
@@ -259,7 +297,7 @@ test('promotion leaves Done pending when origin main advances', async (t) => {
   const result = await integration.promoteTicket({
     ...f, ticket, notion, log: () => {},
     services: {
-      installDeps: () => {},
+      runSetup: () => {},
       runValidation: () => {},
       fetchBranch: () => (++fetches === 1 ? actualBase : 'f'.repeat(40)),
     },
