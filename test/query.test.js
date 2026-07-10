@@ -5,7 +5,6 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const notion = require('../lib/notion');
 const worktrees = require('../lib/worktree');
 const { runTicket } = require('../lib/run');
 const {
@@ -56,21 +55,14 @@ Which device and OS version reproduces it?`);
 });
 
 test('query answer appends a formatted page-body section', async () => {
-  const original = notion.updatePageMarkdown;
   const calls = [];
-  notion.updatePageMarkdown = async (...args) => calls.push(args);
-  try {
-    await appendQueryAnswer('page-id', {
-      answer: 'The sound is currently limited by the configured gain.',
-      followUp: 'Does this happen with silent mode off?',
-    });
-    assert.equal(calls[0][0], 'page-id');
-    assert.equal(calls[0][1].type, 'insert_content');
-    assert.match(calls[0][1].insert_content.content, new RegExp(QUERY_HEADING));
-    assert.match(calls[0][1].insert_content.content, /Follow-up needed/);
-  } finally {
-    notion.updatePageMarkdown = original;
-  }
+  const tracker = { appendSection: async (_ticket, section) => calls.push(section) };
+  await appendQueryAnswer(tracker, { pageId: 'page-id' }, {
+    answer: 'The sound is currently limited by the configured gain.',
+    followUp: 'Does this happen with silent mode off?',
+  });
+  assert.match(calls[0].markdown, new RegExp(QUERY_HEADING));
+  assert.match(calls[0].markdown, /Follow-up needed/);
 });
 
 test('query runner answers bracketed query tickets without creating implementation state', async (t) => {
@@ -83,7 +75,7 @@ test('query runner answers bracketed query tickets without creating implementati
 
   const updates = [];
   const comments = [];
-  const markdownUpdates = [];
+  const sections = [];
   const config = {
     baseDir,
     repoPath,
@@ -110,10 +102,10 @@ test('query runner answers bracketed query tickets without creating implementati
     runDir,
     log: () => {},
     services: {
-      notion: {
-        updatePageMarkdown: async (id, command) => markdownUpdates.push({ id, command }),
-        updatePage: async (id, properties) => updates.push({ id, properties }),
-        safeComment: async (id, message) => comments.push({ id, message }),
+      tracker: {
+        appendSection: async (_ticket, section) => sections.push(section),
+        mirror: async (_ticket, payload) => updates.push(payload),
+        comment: async (_ticket, message) => comments.push(message),
       },
       spawnEngine: async (args) => {
         assert.equal(args.worktreeDir, repoPath);
@@ -134,11 +126,11 @@ NONE`,
 
   assert.equal(result.status, 'answered');
   assert.equal(buildQueryCandidates(config, ticket).length, 1);
-  assert.equal(updates.at(-1).properties.Status.status.name, 'Needs info');
-  assert.equal(updates.at(-1).properties.Attempts.number, 1);
-  assert.match(markdownUpdates[0].command.insert_content.content, /AI query answer/);
-  assert.match(markdownUpdates[0].command.insert_content.content, /current cue path/);
-  assert.match(comments[0].message, /Query answered/);
+  assert.equal(updates.at(-1).status, 'needs_info');
+  assert.equal(updates.at(-1).attempts, 1);
+  assert.match(sections[0].markdown, /AI query answer/);
+  assert.match(sections[0].markdown, /current cue path/);
+  assert.match(comments[0], /Query answered/);
   assert.equal(fs.existsSync(path.join(baseDir, 'worktrees')), false);
 });
 
@@ -148,14 +140,6 @@ test('runTicket routes bracketed query tickets before creating a worktree', asyn
   const repoPath = path.join(baseDir, 'repo');
   fs.mkdirSync(repoPath);
 
-  const originalNotion = {
-    updatePage: notion.updatePage,
-    getBlockChildren: notion.getBlockChildren,
-    getComments: notion.getComments,
-    getCurrentBot: notion.getCurrentBot,
-    updatePageMarkdown: notion.updatePageMarkdown,
-    safeComment: notion.safeComment,
-  };
   const originalWorktrees = {
     fetchBranch: worktrees.fetchBranch,
     createWorktree: worktrees.createWorktree,
@@ -164,15 +148,13 @@ test('runTicket routes bracketed query tickets before creating a worktree', asyn
   const updates = [];
   let worktreeTouched = false;
 
-  notion.updatePage = async (id, properties) => updates.push({ id, properties });
-  notion.getBlockChildren = async () => [{
-    type: 'paragraph',
-    paragraph: { rich_text: [{ plain_text: 'Can we explain the quiet cue volume?' }] },
-  }];
-  notion.getComments = async () => [];
-  notion.getCurrentBot = async () => ({ id: 'bot-id' });
-  notion.updatePageMarkdown = async () => {};
-  notion.safeComment = async () => {};
+  const tracker = {
+    mirror: async (_ticket, payload) => updates.push(payload),
+    comment: async () => {},
+    appendSection: async () => {},
+    fetchBody: async () => 'Can we explain the quiet cue volume?',
+    fetchComments: async () => [],
+  };
   worktrees.fetchBranch = () => { worktreeTouched = true; throw new Error('fetch should not run'); };
   worktrees.createWorktree = () => { worktreeTouched = true; throw new Error('worktree should not run'); };
   worktrees.installDeps = () => { worktreeTouched = true; throw new Error('install should not run'); };
@@ -198,6 +180,7 @@ test('runTicket routes bracketed query tickets before creating a worktree', asyn
       },
       log: () => {},
       services: {
+        tracker,
         queryServices: {
           spawnEngine: async () => ({
             code: 0,
@@ -212,10 +195,9 @@ NONE`,
     });
     assert.equal(result.status, 'answered');
     assert.equal(worktreeTouched, false);
-    assert.equal(updates[0].properties.Status.status.name, 'In progress');
-    assert.equal(updates.at(-1).properties.Status.status.name, 'Needs info');
+    assert.equal(updates[0].status, 'in_progress');
+    assert.equal(updates.at(-1).status, 'needs_info');
   } finally {
-    Object.assign(notion, originalNotion);
     Object.assign(worktrees, originalWorktrees);
   }
 });

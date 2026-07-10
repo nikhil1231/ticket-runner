@@ -91,19 +91,30 @@ function addTicket(f, page, file, content) {
   return { shortId, branch, headSha };
 }
 
-function notionFixture(pages) {
+const { extractTicket } = require('../lib/ticket');
+
+const TO_BOARD = {
+  queued: 'Not started', in_progress: 'In progress', needs_info: 'Needs info',
+  in_review: 'In review', testing: 'Testing', done: 'Done', failed: 'Failed', cancelled: 'Cancelled',
+};
+
+// Legacy-path tracker fixture: reads tickets by board status and records the
+// canonical mirror payloads / comments the pipeline emits.
+function trackerFixture(pages) {
   const updates = [];
   const comments = [];
   return {
     updates,
     comments,
-    queryDatabase: async () => pages.filter((page) => page.properties.Status.status.name === 'Testing'),
-    updatePage: async (id, properties) => {
-      updates.push({ id, properties });
-      const page = pages.find((item) => item.id === id);
-      if (page && properties.Status) page.properties.Status = properties.Status;
+    statusToBoard: (s) => TO_BOARD[s] || null,
+    listByStatus: async (name) => pages.filter((page) => page.properties.Status.status.name === name).map(extractTicket),
+    mirror: async (ticket, payload) => {
+      updates.push({ ticket, payload });
+      const page = pages.find((item) => item.id === (ticket.pageId || ticket.trackerId));
+      if (page && payload.status) page.properties.Status = { status: { name: TO_BOARD[payload.status] } };
+      if (page && payload.forAI !== undefined) page.properties['For AI'] = { checkbox: payload.forAI };
     },
-    safeComment: async (id, message) => comments.push({ id, message }),
+    comment: async (ticket, message) => comments.push({ ticket, message }),
   };
 }
 
@@ -115,24 +126,24 @@ test('cumulative stack is oldest-first and rebuilds after tickets leave Testing'
   const older = makePage('00000000-0000-0000-0000-000000000001', 'Older', '2026-01-01T00:00:00Z');
   const a = addTicket(f, older, 'older.txt', 'older\n');
   const b = addTicket(f, newer, 'newer.txt', 'newer\n');
-  const notion = notionFixture([newer, older]);
+  const tracker = trackerFixture([newer, older]);
   const publishes = [];
   const eas = { pushUpdate: (args) => { publishes.push(args); return { ok: true }; } };
 
-  const first = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const first = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(first.status, 'deployed');
   assert.deepEqual(first.tickets.map((item) => item.title), ['Older', 'Newer']);
   assert.equal(git(first.branch ? integrationDir(f) : f.repoPath, ['merge-base', '--is-ancestor', a.headSha, first.compositeSha]), '');
   assert.equal(git(integrationDir(f), ['merge-base', '--is-ancestor', b.headSha, first.compositeSha]), '');
 
   older.properties.Status.status.name = 'Not started';
-  const second = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const second = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.deepEqual(second.tickets.map((item) => item.title), ['Newer']);
   assert.equal(publishes.length, 2);
   assert.throws(() => git(integrationDir(f), ['merge-base', '--is-ancestor', a.headSha, second.compositeSha]));
 
   newer.properties.Status.status.name = 'Done';
-  const empty = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const empty = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.deepEqual(empty.tickets, []);
   assert.equal(empty.compositeSha, empty.baseSha);
   assert.equal(publishes.length, 3);
@@ -148,29 +159,29 @@ test('a conflicting ticket is parked while compatible tickets still deploy', asy
   const secondPage = makePage('00000000-0000-0000-0000-000000000012', 'Second', '2026-01-02T00:00:00Z');
   addTicket(f, firstPage, 'shared.txt', 'first\n');
   addTicket(f, secondPage, 'shared.txt', 'second\n');
-  const notion = notionFixture([firstPage, secondPage]);
+  const tracker = trackerFixture([firstPage, secondPage]);
   const eas = { pushUpdate: () => ({ ok: true }) };
 
-  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.deepEqual(result.tickets.map((item) => item.title), ['First']);
   assert.equal(secondPage.properties.Status.status.name, 'In review');
-  assert.match(notion.comments[0].message, /conflicted/i);
-  assert.match(notion.comments[0].message, /shared\.txt/);
+  assert.match(tracker.comments[0].message, /conflicted/i);
+  assert.match(tracker.comments[0].message, /shared\.txt/);
 });
 
 test('Done promotion merges only the ticket, pushes main, and finalizes Notion', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000021', 'Promote me', '2026-01-01T00:00:00Z', 'Done');
   const ticketRef = addTicket(f, page, 'feature.txt', 'feature\n');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const ticket = require('../lib/ticket').extractTicket(page);
 
-  const result = await integration.promoteTicket({ ...f, ticket, notion, services, log: () => {} });
+  const result = await integration.promoteTicket({ ...f, ticket, tracker, services, log: () => {} });
   assert.equal(result.status, 'merged');
   git(f.repoPath, ['fetch', 'origin', 'main']);
   assert.equal(git(f.repoPath, ['merge-base', '--is-ancestor', ticketRef.headSha, 'origin/main']), '');
-  assert.equal(notion.updates.at(-1).properties['For AI'].checkbox, false);
-  assert.match(notion.comments.at(-1).message, /Merged automatically/);
+  assert.equal(tracker.updates.at(-1).payload.forAI, false);
+  assert.match(tracker.comments.at(-1).message, /Merged automatically/);
   assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
 });
 
@@ -211,10 +222,10 @@ test('validation-only publisher composes a testing stack without EAS', async (t)
   };
   const page = makePage('00000000-0000-0000-0000-000000000091', 'Generic', '2026-01-01T00:00:00Z');
   addTicket(f, page, 'generic.txt', 'generic\n');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const eas = { pushUpdate: () => { throw new Error('EAS should not run'); } };
 
-  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(result.status, 'deployed');
   assert.equal(result.publisher, 'none');
   assert.equal(result.projectKey, 'leetcode-senpai');
@@ -223,12 +234,12 @@ test('validation-only publisher composes a testing stack without EAS', async (t)
 test('stack status is read-only when metadata is missing', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000031', 'Missing', '2026-01-01T00:00:00Z');
-  const notion = notionFixture([page]);
-  const result = await integration.stackStatus({ ...f, notion });
+  const tracker = trackerFixture([page]);
+  const result = await integration.stackStatus({ ...f, tracker });
   assert.equal(result.desired.length, 1);
   assert.match(result.desired[0].issue, /missing metadata/);
-  assert.equal(notion.updates.length, 0);
-  assert.equal(notion.comments.length, 0);
+  assert.equal(tracker.updates.length, 0);
+  assert.equal(tracker.comments.length, 0);
   assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
 });
 
@@ -236,19 +247,19 @@ test('validation and EAS failures preserve the previous deployment state', async
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000041', 'Risky', '2026-01-01T00:00:00Z');
   addTicket(f, page, 'safe.txt', 'safe\n');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   let publishes = 0;
   const eas = { pushUpdate: () => { publishes += 1; return { ok: false, error: 'EAS unavailable' }; } };
 
   const invalid = await integration.reconcileBoard({
-    ...f, notion, eas, log: () => {},
+    ...f, tracker, eas, log: () => {},
     services: { runSetup: () => {}, runValidation: () => { throw new Error('tests failed'); } },
   });
   assert.equal(invalid.status, 'validation_failed');
   assert.equal(publishes, 0);
   assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
 
-  const unpublished = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const unpublished = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(unpublished.status, 'publish_failed');
   assert.equal(publishes, 1);
   assert.equal(state.readState(f.baseDir, 'integration-caligo', null), null);
@@ -258,7 +269,7 @@ test('fetch failure blocks stack reconciliation without clearing previous deploy
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000045', 'Queued', '2026-01-01T00:00:00Z');
   addTicket(f, page, 'queued.txt', 'queued\n');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const previous = { status: 'deployed', baseSha: 'a'.repeat(40), tickets: [{ title: 'Previous' }] };
   state.writeState(f.baseDir, 'integration-caligo', previous);
   let publishes = 0;
@@ -267,7 +278,7 @@ test('fetch failure blocks stack reconciliation without clearing previous deploy
 
   const result = await integration.reconcileBoard({
     ...f,
-    notion,
+    tracker,
     eas,
     log: (message) => logs.push(message),
     services: {
@@ -281,7 +292,7 @@ test('fetch failure blocks stack reconciliation without clearing previous deploy
   assert.equal(result.status, 'fetch_failed');
   assert.match(result.error, /Connection reset by peer/);
   assert.equal(publishes, 0);
-  assert.equal(notion.updates.length, 0);
+  assert.equal(tracker.updates.length, 0);
   assert.deepEqual(state.readState(f.baseDir, 'integration-caligo', null), previous);
   assert.match(logs[0], /testing stack fetch failed/);
 });
@@ -290,12 +301,12 @@ test('promotion leaves Done pending when origin main advances', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000051', 'Race', '2026-01-01T00:00:00Z', 'Done');
   addTicket(f, page, 'race.txt', 'race\n');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const ticket = require('../lib/ticket').extractTicket(page);
   const actualBase = git(f.repoPath, ['rev-parse', 'origin/main']);
   let fetches = 0;
   const result = await integration.promoteTicket({
-    ...f, ticket, notion, log: () => {},
+    ...f, ticket, tracker, log: () => {},
     services: {
       runSetup: () => {},
       runValidation: () => {},
@@ -304,7 +315,7 @@ test('promotion leaves Done pending when origin main advances', async (t) => {
   });
   assert.equal(result.status, 'remote_advanced');
   assert.equal(page.properties.Status.status.name, 'Done');
-  assert.equal(notion.updates.length, 0);
+  assert.equal(tracker.updates.length, 0);
   assert.notEqual(ticketState.readMeta(f.baseDir, ticket.shortId), null);
 });
 
@@ -314,24 +325,24 @@ test('promotion recovers idempotently when the ticket commit is already on main'
   const ref = addTicket(f, page, 'recovered.txt', 'recovered\n');
   git(f.repoPath, ['merge', '--no-ff', '--no-edit', ref.branch]);
   git(f.repoPath, ['push', 'origin', 'main']);
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const ticket = require('../lib/ticket').extractTicket(page);
 
-  const result = await integration.promoteTicket({ ...f, ticket, notion, services, log: () => {} });
+  const result = await integration.promoteTicket({ ...f, ticket, tracker, services, log: () => {} });
   assert.equal(result.status, 'already_merged');
-  assert.equal(notion.updates[0].properties['For AI'].checkbox, false);
+  assert.equal(tracker.updates[0].payload.forAI, false);
   assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
 });
 
 test('missing stack metadata parks the ticket instead of silently deploying it', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000071', 'Lost branch', '2026-01-01T00:00:00Z');
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const eas = { pushUpdate: () => ({ ok: true }) };
-  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(result.status, 'deployed');
   assert.equal(page.properties.Status.status.name, 'In review');
-  assert.match(notion.comments[0].message, /metadata is missing/i);
+  assert.match(tracker.comments[0].message, /metadata is missing/i);
   assert.deepEqual(result.tickets, []);
 });
 
@@ -346,10 +357,10 @@ test('first reconciliation adopts legacy metadata from an existing local branch'
     dir: path.join(f.baseDir, 'worktrees', ref.shortId),
     title: 'Legacy',
   });
-  const notion = notionFixture([page]);
+  const tracker = trackerFixture([page]);
   const eas = { pushUpdate: () => ({ ok: true }) };
 
-  const result = await integration.reconcileBoard({ ...f, notion, eas, services, log: () => {} });
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(result.tickets[0].headSha, ref.headSha);
   const adopted = ticketState.readMeta(f.baseDir, ref.shortId);
   assert.equal(adopted.headSha, ref.headSha);

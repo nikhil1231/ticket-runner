@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const notion = require('../lib/notion');
+const { createNotionTracker } = require('../lib/trackers/notion');
 const {
   PLAN_HEADING, extractIncubatorTicket, recoveryStatus, splitManagedPlan, extractPlan,
   buildPlanningPrompt, updateManagedPlan, handoffTicket,
@@ -56,47 +56,40 @@ test('planning prompt includes existing plan and review comments', () => {
 });
 
 test('managed plan appends initially and precisely replaces on revision', async () => {
-  const original = notion.updatePageMarkdown;
   const calls = [];
-  notion.updatePageMarkdown = async (...args) => calls.push(args);
-  try {
-    await updateManagedPlan('page', '', 'First detailed plan');
-    await updateManagedPlan('page', `${PLAN_HEADING}\n\nOld plan`, 'Revised detailed plan');
-    assert.equal(calls[0][1].type, 'insert_content');
-    assert.match(calls[0][1].insert_content.content, /First detailed plan/);
-    assert.equal(calls[1][1].type, 'update_content');
-    assert.equal(calls[1][1].update_content.content_updates[0].old_str, `${PLAN_HEADING}\n\nOld plan`);
-    assert.match(calls[1][1].update_content.content_updates[0].new_str, /Revised detailed plan/);
-  } finally {
-    notion.updatePageMarkdown = original;
-  }
+  const tracker = { appendSection: async (_ticket, section) => calls.push(section) };
+  const ticket = { pageId: 'page' };
+  await updateManagedPlan(tracker, ticket, '', 'First detailed plan');
+  await updateManagedPlan(tracker, ticket, `${PLAN_HEADING}\n\nOld plan`, 'Revised detailed plan');
+  assert.equal(calls[0].existing, undefined);
+  assert.match(calls[0].markdown, /First detailed plan/);
+  assert.match(calls[0].markdown, new RegExp(PLAN_HEADING));
+  assert.equal(calls[1].existing, `${PLAN_HEADING}\n\nOld plan`);
+  assert.match(calls[1].markdown, /Revised detailed plan/);
 });
 
 test('handoff moves the same page and queues it for feature processing', async () => {
-  const original = {
-    getDataSourceId: notion.getDataSourceId,
-    movePage: notion.movePage,
-    updatePage: notion.updatePage,
-    safeComment: notion.safeComment,
-  };
+  // Drive handoff through the real Notion adapter with a fake transport so the
+  // move + property-reset sequence is still exercised end to end.
   const calls = [];
-  notion.getDataSourceId = async (id) => { calls.push(['source', id]); return 'source-id'; };
-  notion.movePage = async (page, source) => calls.push(['move', page, source]);
-  notion.updatePage = async (page, properties) => calls.push(['update', page, properties]);
-  notion.safeComment = async () => {};
-  try {
-    const ok = await handoffTicket({
-      config: {},
-      ticket: { pageId: 'page-id', title: 'Ticket' },
-      board: { app: 'caligo', databaseId: 'db-id' },
-      log: () => {},
-    });
-    assert.equal(ok, true);
-    assert.deepEqual(calls[1], ['move', 'page-id', 'source-id']);
-    assert.equal(calls[2][2].Status.status.name, 'Not started');
-    assert.equal(calls[2][2]['For AI'].checkbox, true);
-    assert.equal(calls[2][2].CLI.select, null);
-  } finally {
-    Object.assign(notion, original);
-  }
+  const transport = {
+    getDataSourceId: async (id) => { calls.push(['source', id]); return 'source-id'; },
+    movePage: async (page, source) => calls.push(['move', page, source]),
+    updatePage: async (page, properties) => calls.push(['update', page, properties]),
+    safeComment: async () => {},
+  };
+  const tracker = createNotionTracker({ transport, databaseId: 'incubator-db' });
+  const ok = await handoffTicket({
+    config: {},
+    ticket: { pageId: 'page-id', title: 'Ticket' },
+    board: { app: 'caligo', databaseId: 'db-id' },
+    log: () => {},
+    services: { tracker },
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls[0], ['source', 'db-id']);
+  assert.deepEqual(calls[1], ['move', 'page-id', 'source-id']);
+  assert.equal(calls[2][2].Status.status.name, 'Not started');
+  assert.equal(calls[2][2]['For AI'].checkbox, true);
+  assert.equal(calls[2][2].CLI.select, null);
 });
