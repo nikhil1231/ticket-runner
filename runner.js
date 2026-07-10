@@ -18,7 +18,7 @@ const { execFileSync } = require('child_process');
 const healingState = require('./lib/healing-state');
 const { classifyFailure } = require('./lib/failure');
 const { repairRunner } = require('./lib/self-heal');
-const { resolveProjects, findProject, resolveIncubatorProject } = require('./lib/projects');
+const { resolveProjects, findProject } = require('./lib/projects');
 const { openDb, closeDb } = require('./lib/db');
 const { createStore } = require('./lib/store');
 const { getProjectTracker, getIncubatorTracker } = require('./lib/trackers');
@@ -107,24 +107,6 @@ function trackerForStoreTicket(config, ticket, cache) {
   const board = findProject(config, ticket.projectKey);
   if (!board) throw new Error(`unknown project for ticket ${ticket.shortId}: ${ticket.projectKey}`);
   return realProjectTracker(board, cache);
-}
-
-async function findCandidates(config) {
-  const all = [];
-  for (const board of config.projects) {
-    const tracker = getProjectTracker(board, { log });
-    for (const ticket of await tracker.listQueue()) all.push({ board, ticket });
-  }
-  const incubatorTracker = getIncubatorTracker(config, { log });
-  if (incubatorTracker) {
-    for (const page of await incubatorTracker.pagesByStatus('Not started')) {
-      const ticket = extractIncubatorTicket(page);
-      const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
-      all.push({ type: 'incubator', board, page, ticket });
-    }
-  }
-  all.sort((a, b) => a.ticket.createdTime.localeCompare(b.ticket.createdTime));
-  return all;
 }
 
 function incubatorSnapshot(ticket, status = 'queued') {
@@ -216,42 +198,6 @@ async function recoverStaleClaims(config, store = null) {
         : `Runner restarted during planning and max attempts (${config.maxAttempts}) were reached.`);
     }
   }
-}
-
-async function processIncubatorHandoffs(config) {
-  const incubatorTracker = getIncubatorTracker(config, { log });
-  if (!incubatorTracker) return;
-  for (const page of await incubatorTracker.pagesByStatus('Done')) {
-    const ticket = extractIncubatorTicket(page);
-    const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
-    await handoffTicket({ config, ticket, board, log, services: { tracker: incubatorTracker } });
-  }
-}
-
-async function processForceDeploys(config) {
-  for (const board of config.projects) {
-    const tracker = getProjectTracker(board, { log });
-    for (const ticket of await tracker.listForceDeploy()) {
-      await forceDeploy({ baseDir, config, board, ticket, tracker, integration, log });
-    }
-  }
-}
-
-async function processPromotions(config) {
-  const pending = [];
-  for (const board of config.projects) {
-    const tracker = getProjectTracker(board, { log });
-    for (const ticket of await tracker.listDone()) pending.push({ board, ticket, tracker });
-  }
-  pending.sort((a, b) => a.ticket.createdTime.localeCompare(b.ticket.createdTime));
-  for (const item of pending) {
-    const result = await integration.promoteTicket({ config, board: item.board, ticket: item.ticket, tracker: item.tracker, log });
-    if (result.status === 'remote_advanced') {
-      log(`main advanced while promoting "${item.ticket.title}"; retrying next tick`);
-      return { status: 'blocked', reason: 'remote_advanced' };
-    }
-  }
-  return { status: 'ok' };
 }
 
 async function processStoreActions(config, store, actions, cache) {
