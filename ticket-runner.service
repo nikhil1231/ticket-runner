@@ -2,6 +2,9 @@
 Description=Notion AI ticket runner
 Wants=network-online.target
 After=network-online.target
+# Grouped with the read-only dashboard under ticket-runner.target so
+# `systemctl --user {start,stop,restart} ticket-runner.target` controls both.
+PartOf=ticket-runner.target
 
 [Service]
 Type=simple
@@ -17,4 +20,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy=ticket-runner.target

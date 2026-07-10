@@ -508,6 +508,17 @@ async function main() {
     dbCommand(process.argv[3]);
     return;
   }
+  // `dashboard` is a read-only local view; like `db` it must not require any
+  // tracker token or reach out to Notion/GitHub to resolve projects.
+  if (process.argv[2] === 'dashboard') {
+    const config = loadConfig();
+    const port = Number(process.argv[3]) || Number(process.env.DASHBOARD_PORT) || 4600;
+    const host = process.env.DASHBOARD_HOST || '127.0.0.1';
+    const { startServer } = require('./lib/dashboard');
+    const { url } = await startServer(config, { baseDir, port, host });
+    log(`dashboard live at ${url} (Ctrl+C to stop)`);
+    return;
+  }
   const config = loadConfig();
   if (configNeedsNotion(config)) {
     if (!process.env.NOTION_TOKEN) {
@@ -588,7 +599,7 @@ async function main() {
       await sleep(config.pollIntervalMs);
     }
   } else {
-    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [project] | reconcile [project] | cleanup | db [status|export|doctor])`);
+    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [project] | reconcile [project] | cleanup | dashboard [port] | db [status|export|doctor])`);
     process.exit(1);
   }
 }

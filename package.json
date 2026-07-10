@@ -13,6 +13,7 @@
     "migrate:notion": "node scripts/migrate-notion-to-sqlite.js",
     "setup:service": "node scripts/install-service.js",
     "healthcheck": "node runner.js healthcheck",
+    "dashboard": "node runner.js dashboard",
     "supervise": "node scripts/supervisor.js",
     "cleanup": "node runner.js cleanup",
     "test": "node --test test/*.test.js"

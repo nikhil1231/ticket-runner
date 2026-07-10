@@ -1,0 +1,24 @@
+[Unit]
+Description=Ticket runner dashboard (read-only view of state/runner.db)
+Wants=network-online.target
+After=network-online.target ticket-runner.service
+# Stops/restarts together with the runner via the shared target.
+PartOf=ticket-runner.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Programming/AI/ticket-runner
+ExecStart=%h/.local/bin/node runner.js dashboard
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The dashboard is read-only and needs no coding-CLI auth or sandbox opt-out.
+# Bind to loopback by default; set DASHBOARD_HOST=0.0.0.0 to expose it, and
+# DASHBOARD_PORT to change the port (default 4600).
+Environment=DASHBOARD_HOST=127.0.0.1
+Environment=DASHBOARD_PORT=4600
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=ticket-runner.target

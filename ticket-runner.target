@@ -1,0 +1,9 @@
+[Unit]
+Description=Ticket runner (loop + dashboard)
+# Starting the target pulls in both units; PartOf on each propagates
+# stop/restart back down from the target.
+Wants=ticket-runner.service ticket-runner-dashboard.service
+After=ticket-runner.service ticket-runner-dashboard.service
+
+[Install]
+WantedBy=default.target

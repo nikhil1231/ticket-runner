@@ -34,8 +34,34 @@ node runner.js stack [project] # read-only desired/deployed stack report
 node runner.js reconcile [project] # rebuild cumulative testing stacks
 node runner.js cleanup         # prune verified merged ticket branches
 node runner.js healthcheck     # read-only config/Git/Notion readiness check
-npm run setup:service          # install/reload guarded supervisor
+node runner.js dashboard [port] # read-only web dashboard (default :4600)
+npm run setup:service          # install/reload the runner + dashboard target
 ```
+
+## Deployment
+
+The runner is a self-managing host agent, not a stateless container: it drives
+authenticated coding CLIs (`codex`, `agy`), operates on Git worktrees of the
+target app repos, and self-updates its own checkout. It ships as **systemd user
+units**, not Docker.
+
+`npm run setup:service` installs three units into `~/.config/systemd/user/`:
+
+- `ticket-runner.service` - the guarded, self-updating supervisor (`scripts/supervisor.js`).
+- `ticket-runner-dashboard.service` - the read-only dashboard (`runner.js dashboard`).
+- `ticket-runner.target` - groups both so they start/stop/restart together.
+
+```sh
+systemctl --user status  ticket-runner.target      # both units at a glance
+systemctl --user restart ticket-runner.target      # restart loop + dashboard
+journalctl --user -u ticket-runner-dashboard.service -f
+```
+
+Both processes share `state/runner.db` (the runner writes, the dashboard reads via
+WAL), so they must run from the same checkout. The dashboard binds `127.0.0.1:4600`
+by default; set `DASHBOARD_HOST=0.0.0.0` and/or `DASHBOARD_PORT` in the dashboard
+unit to expose or move it. Edit `WorkingDirectory=` in the units if your checkout
+lives outside `~/Documents/Programming/AI/ticket-runner`.
 
 ## Workflow
 
