@@ -9,6 +9,7 @@
     "once": "node runner.js once",
     "dry": "node runner.js once --dry-run",
     "setup:notion": "node scripts/setup-notion.js",
+    "setup:github": "node scripts/setup-github.js",
     "setup:service": "node scripts/install-service.js",
     "healthcheck": "node runner.js healthcheck",
     "supervise": "node scripts/supervisor.js",

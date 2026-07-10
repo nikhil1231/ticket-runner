@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const notion = require('./lib/notion');
+const github = require('./lib/github');
 const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
 const { extractIncubatorTicket, recoveryStatus, runIncubatorTicket, handoffTicket } = require('./lib/incubator');
@@ -46,6 +47,17 @@ function loadConfig() {
   if (config.repoPath) config.repoPath = path.resolve(baseDir, config.repoPath);
   config.baseDir = baseDir;
   return config;
+}
+
+function configNeedsNotion(config) {
+  if (config.projectRegistry?.databaseId) return true;
+  if (config.incubator?.databaseId || config.incubator?.tracker?.type === 'notion') return true;
+  return (config.projects || config.boards || []).some((project) => !project.tracker || project.tracker.type === 'notion');
+}
+
+function configNeedsGithub(config) {
+  if (config.incubator?.tracker?.type === 'github') return true;
+  return (config.projects || config.boards || []).some((project) => project.tracker?.type === 'github');
 }
 
 async function withStore(config, fn) {
@@ -405,7 +417,14 @@ async function healthcheck(config) {
       }
     }
   }
-  await notion.getCurrentBot();
+  if ((config.projects || []).some((project) => project.tracker?.type === 'notion') || config.incubator?.tracker?.type === 'notion' || config.incubator?.databaseId) {
+    await notion.getCurrentBot();
+  }
+  for (const board of config.projects || []) {
+    if (board.tracker?.type === 'github') {
+      await getProjectTracker(board, { log }).healthcheck();
+    }
+  }
   const db = openDb(baseDir);
   try {
     const integrity = db.prepare('PRAGMA integrity_check').get().integrity_check;
@@ -413,7 +432,7 @@ async function healthcheck(config) {
   } finally {
     closeDb(db);
   }
-  console.log('healthcheck ok: config, target repositories, ticket store, and Notion are reachable');
+  console.log('healthcheck ok: config, target repositories, ticket store, and trackers are reachable');
 }
 
 // Introspection over the local ticket store. Read-only except `export`, which
@@ -543,13 +562,29 @@ async function main() {
     dbCommand(process.argv[3]);
     return;
   }
-  if (!process.env.NOTION_TOKEN) {
-    console.error('NOTION_TOKEN is not set. Copy .env.example to .env and fill it in.');
-    process.exit(1);
-  }
-  notion.setToken(process.env.NOTION_TOKEN);
   const config = loadConfig();
+  if (configNeedsNotion(config)) {
+    if (!process.env.NOTION_TOKEN) {
+      console.error('NOTION_TOKEN is not set. Copy .env.example to .env and fill it in.');
+      process.exit(1);
+    }
+    notion.setToken(process.env.NOTION_TOKEN);
+  }
+  if (configNeedsGithub(config)) {
+    if (!process.env.GITHUB_TOKEN) {
+      console.error('GITHUB_TOKEN is not set for a GitHub tracker project.');
+      process.exit(1);
+    }
+    github.setToken(process.env.GITHUB_TOKEN);
+  }
   await resolveProjects(config, notion);
+  if (configNeedsGithub(config)) {
+    if (!process.env.GITHUB_TOKEN) {
+      console.error('GITHUB_TOKEN is not set for a GitHub tracker project.');
+      process.exit(1);
+    }
+    github.setToken(process.env.GITHUB_TOKEN);
+  }
 
   const cmd = process.argv[2] || 'loop';
   const dryRun = process.argv.includes('--dry-run');
