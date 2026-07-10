@@ -26,19 +26,24 @@ function systemctl(args, { check = true } = {}) {
   }
 }
 
-// Earlier versions enabled ticket-runner.service directly under default.target.
-// Disable it first (best-effort) so re-enabling under the target doesn't leave a
-// stale default.target.wants symlink pointing at the runner.
-systemctl(['disable', 'ticket-runner.service'], { check: false });
-
+// Install each unit as a symlink into the user unit dir so `git pull` refreshes
+// the running definitions in place. Idempotent: replace any existing entry.
 for (const unit of UNITS) {
-  fs.copyFileSync(path.join(root, unit), path.join(unitDir, unit));
+  const dest = path.join(unitDir, unit);
+  fs.rmSync(dest, { force: true });
+  fs.symlinkSync(path.join(root, unit), dest);
 }
 
+// Older installs enabled ticket-runner.service directly under default.target.
+// Remove that stale want by hand rather than via `systemctl disable`, which on a
+// symlink-installed unit would also delete the unit file symlink itself.
+fs.rmSync(path.join(unitDir, 'default.target.wants', 'ticket-runner.service'), { force: true });
+
 systemctl(['daemon-reload']);
-systemctl(['enable', ...UNITS]);
-// Starting the target brings up both services; --now on enable would only cover
-// the target itself, so restart it explicitly to (re)launch members too.
+// Enable the target for boot, then group both services under it.
+systemctl(['enable', 'ticket-runner.target']);
+systemctl(['add-wants', 'ticket-runner.target', 'ticket-runner.service', 'ticket-runner-dashboard.service']);
+// Starting the target brings up both members; restart to pick up unit changes.
 systemctl(['restart', 'ticket-runner.target']);
 
 console.log('Installed ticket-runner.target (runner loop + dashboard).');
