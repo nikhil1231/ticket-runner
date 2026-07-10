@@ -21,6 +21,10 @@ const { resolveProjects, findProject, resolveIncubatorProject } = require('./lib
 const { openDb, closeDb } = require('./lib/db');
 const { createStore } = require('./lib/store');
 const { getProjectTracker, getIncubatorTracker } = require('./lib/trackers');
+const { flushOutbox } = require('./lib/sync');
+const { createStoreBackedTracker } = require('./lib/store-tracker');
+const { applyTrackerCommands, upsertSnapshot } = require('./lib/cutover');
+const { importLegacyState } = require('./lib/import-legacy');
 
 const baseDir = __dirname;
 
@@ -44,6 +48,55 @@ function loadConfig() {
   return config;
 }
 
+async function withStore(config, fn) {
+  const db = openDb(baseDir);
+  const previous = config.store;
+  try {
+    const store = createStore({ baseDir, db });
+    config.store = store;
+    importLegacyState({ store, baseDir, log });
+    return await fn(store);
+  } finally {
+    if (previous === undefined) delete config.store;
+    else config.store = previous;
+    closeDb(db);
+  }
+}
+
+function trackerCache() {
+  return new Map();
+}
+
+function realProjectTracker(board, cache) {
+  return getProjectTracker(board, { log, cache });
+}
+
+function realIncubatorTracker(config, cache) {
+  return getIncubatorTracker(config, { log, cache });
+}
+
+function projectTrackerFacade({ store, board, cache }) {
+  const tracker = realProjectTracker(board, cache);
+  return createStoreBackedTracker({ store, tracker, projectKey: board.key || board.app });
+}
+
+function incubatorTrackerFacade({ store, config, cache }) {
+  const tracker = realIncubatorTracker(config, cache);
+  if (!tracker) return null;
+  return createStoreBackedTracker({ store, tracker, projectKey: null });
+}
+
+function trackerForStoreTicket(config, ticket, cache) {
+  if (ticket.kind === 'incubator') {
+    const tracker = realIncubatorTracker(config, cache);
+    if (!tracker) throw new Error('incubator tracker is not configured');
+    return tracker;
+  }
+  const board = findProject(config, ticket.projectKey);
+  if (!board) throw new Error(`unknown project for ticket ${ticket.shortId}: ${ticket.projectKey}`);
+  return realProjectTracker(board, cache);
+}
+
 async function findCandidates(config) {
   const all = [];
   for (const board of config.projects) {
@@ -62,7 +115,69 @@ async function findCandidates(config) {
   return all;
 }
 
-async function recoverStaleClaims(config) {
+function incubatorSnapshot(ticket, status = 'queued') {
+  return {
+    tracker: 'notion',
+    trackerId: ticket.pageId,
+    projectKey: ticket.projectKey || ticket.app || 'incubator',
+    kind: 'incubator',
+    title: ticket.title,
+    shortId: ticket.shortId,
+    createdAt: ticket.createdTime,
+    trackerMeta: {},
+    mirroredStatus: ticket.status,
+    status,
+  };
+}
+
+async function pollIncubatorCommands(config, store, cache) {
+  const tracker = realIncubatorTracker(config, cache);
+  if (!tracker) return [];
+  const commands = [];
+  for (const page of await tracker.pagesByStatus('Not started')) {
+    const ticket = extractIncubatorTicket(page);
+    const existing = store.getByTrackerId('notion', ticket.pageId);
+    const snapshot = incubatorSnapshot(ticket, 'queued');
+    if (!existing) commands.push({ type: 'create', trackerId: ticket.pageId, snapshot });
+    else if (existing.status !== 'queued') commands.push({ type: 'requeue', trackerId: ticket.pageId, ticket: existing, snapshot });
+  }
+  for (const page of await tracker.pagesByStatus('Done')) {
+    const ticket = extractIncubatorTicket(page);
+    let existing = store.getByTrackerId('notion', ticket.pageId);
+    const snapshot = incubatorSnapshot(ticket, 'in_review');
+    if (!existing) existing = upsertSnapshot(store, snapshot);
+    commands.push({ type: 'incubator_approve', trackerId: ticket.pageId, ticket: existing, snapshot });
+  }
+  return commands;
+}
+
+async function pollAndApplyCommands(config, store, cache) {
+  const combined = { promotions: [], forceDeploys: [], incubatorApprovals: [] };
+  for (const board of config.projects) {
+    const tracker = realProjectTracker(board, cache);
+    if (!tracker.pollCommands) continue;
+    const commands = await tracker.pollCommands({ store, projectKey: board.key || board.app, kind: 'feature' });
+    const actions = applyTrackerCommands({ store, commands, log });
+    combined.promotions.push(...actions.promotions);
+    combined.forceDeploys.push(...actions.forceDeploys);
+  }
+  const incubatorActions = applyTrackerCommands({ store, commands: await pollIncubatorCommands(config, store, cache), log });
+  combined.incubatorApprovals.push(...incubatorActions.incubatorApprovals);
+  return combined;
+}
+
+async function recoverStaleClaims(config, store = null) {
+  if (store) {
+    for (const ticket of store.listByStatus(null, 'in_progress')) {
+      const requeue = ticket.attempts < config.maxAttempts;
+      log(`stale claim "${ticket.title}" (${ticket.projectKey}) - ${requeue ? 'requeuing' : 'marking Failed'}`);
+      store.transition(ticket.id, requeue ? 'queued' : 'failed');
+      store.enqueueComment(ticket.id, requeue
+        ? `Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`
+        : `Runner restarted mid-run and max attempts (${config.maxAttempts}) were reached.`);
+    }
+    return;
+  }
   for (const board of config.projects) {
     const tracker = getProjectTracker(board, { log });
     for (const ticket of await tracker.listStale()) {
@@ -127,9 +242,56 @@ async function processPromotions(config) {
   return { status: 'ok' };
 }
 
-async function reconcileBoards(config, onlyApp) {
+async function processStoreActions(config, store, actions, cache) {
+  const promotions = actions.promotions
+    .map((ticket) => store.getById(ticket.id))
+    .filter(Boolean)
+    .sort((a, b) => a.createdTime.localeCompare(b.createdTime));
+  for (const ticket of promotions) {
+    const board = findProject(config, ticket.projectKey);
+    if (!board) {
+      store.transition(ticket.id, 'in_review');
+      store.enqueueComment(ticket.id, `Automatic merge cannot start because project "${ticket.projectKey}" is not configured.`);
+      continue;
+    }
+    const tracker = projectTrackerFacade({ store, board, cache });
+    const result = await integration.promoteTicket({ config, board, ticket, tracker, log });
+    if (result.status === 'remote_advanced') {
+      log(`main advanced while promoting "${ticket.title}"; retrying next tick`);
+      return { status: 'blocked', reason: 'remote_advanced' };
+    }
+  }
+
+  for (const ticketRef of actions.forceDeploys) {
+    const ticket = store.getById(ticketRef.id);
+    if (!ticket) continue;
+    const board = findProject(config, ticket.projectKey);
+    if (!board) {
+      store.enqueueComment(ticket.id, `Force deploy cannot start because project "${ticket.projectKey}" is not configured.`);
+      continue;
+    }
+    await forceDeploy({
+      baseDir, config, board, ticket,
+      tracker: projectTrackerFacade({ store, board, cache }),
+      integration,
+      log,
+    });
+  }
+
+  for (const ticketRef of actions.incubatorApprovals) {
+    const ticket = store.getById(ticketRef.id);
+    if (!ticket) continue;
+    const board = findProject(config, ticket.projectKey || ticket.app);
+    const tracker = incubatorTrackerFacade({ store, config, cache });
+    const handedOff = await handoffTicket({ config, ticket, board, log, services: { tracker } });
+    if (handedOff && ticket.status !== 'done') store.transition(ticket.id, 'done');
+  }
+  return { status: 'ok' };
+}
+
+async function reconcileBoards(config, onlyApp, cache = trackerCache()) {
   for (const board of config.projects.filter((item) => !onlyApp || item.key === onlyApp || item.app === onlyApp)) {
-    const tracker = getProjectTracker(board, { log });
+    const tracker = config.store ? projectTrackerFacade({ store: config.store, board, cache }) : getProjectTracker(board, { log });
     const result = await integration.reconcileBoard({ config, board, tracker, eas, log });
     if (['fetch_failed', 'validation_failed', 'publish_failed'].includes(result.status)) {
       log(`${board.key || board.app} stack reconciliation blocked: ${result.error || result.status}`);
@@ -140,37 +302,72 @@ async function reconcileBoards(config, onlyApp) {
 }
 
 async function tick(config, { dryRun = false } = {}) {
+  if (!config.store) return withStore(config, (store) => tick(config, { dryRun, store }));
+  const store = config.store;
+  const cache = trackerCache();
+  const trackerFor = (ticket) => trackerForStoreTicket(config, ticket, cache);
+
   if (!dryRun) {
-    const promotions = await processPromotions(config);
-    if (promotions.status === 'blocked') return promotions;
-    await processForceDeploys(config);
-    await processIncubatorHandoffs(config);
-    const reconciled = await reconcileBoards(config);
+    await flushOutbox({ store, trackerFor, log });
+    const actions = await pollAndApplyCommands(config, store, cache);
+    const processed = await processStoreActions(config, store, actions, cache);
+    if (processed.status === 'blocked') return processed;
+    const reconciled = await reconcileBoards(config, undefined, cache);
     if (reconciled.status === 'blocked') return reconciled;
   }
-  const candidates = await findCandidates(config);
+  const candidates = store.readyTickets();
   if (!candidates.length) {
     log('queue empty');
+    if (!dryRun) {
+      await flushOutbox({ store, trackerFor, log });
+      store.exportJsonl();
+    }
     return;
   }
-  log(`queue (${candidates.length}): ${candidates.map((c) => c.type === 'incubator'
-    ? `"${c.ticket.title}" [incubator/${c.ticket.app || 'no project'}, attempt ${c.ticket.attempts}]`
-    : `"${c.ticket.title}" [${c.board.key || c.board.app}/${c.ticket.cli || 'policy default'}, attempt ${c.ticket.attempts}]`).join('; ')}`);
+  log(`queue (${candidates.length}): ${candidates.map((ticket) => `"${ticket.title}" [${ticket.kind}/${ticket.projectKey || 'no project'}, attempt ${ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
-    log(`dry run - would claim "${candidates[0].ticket.title}"`);
+    log(`dry run - would claim "${candidates[0].title}"`);
     return;
   }
-  const { board, ticket } = candidates[0];
-  if (candidates[0].type === 'incubator') {
+  const ticket = store.claimNext();
+  if (!ticket) return;
+  if (ticket.kind === 'incubator') {
+    const board = findProject(config, ticket.projectKey || ticket.app);
+    const tracker = incubatorTrackerFacade({ store, config, cache });
+    if (!tracker) {
+      store.transition(ticket.id, 'failed');
+      store.enqueueComment(ticket.id, 'Incubator tracker is not configured; this planning ticket cannot run.');
+      await flushOutbox({ store, trackerFor, log });
+      return { status: 'failed' };
+    }
     if (!board) {
-      const incubatorTracker = getIncubatorTracker(config, { log });
-      await incubatorTracker.mirror(ticket, { status: 'needs_info' });
-      await incubatorTracker.comment(ticket, 'Select a Project, then return this ticket to Not started.');
+      await tracker.mirror(ticket, { status: 'needs_info' });
+      await tracker.comment(ticket, 'Select a Project, then return this ticket to Not started.');
+      await flushOutbox({ store, trackerFor, log });
       return;
     }
-    return runIncubatorTicket({ config, board, ticket, log });
+    const result = await runIncubatorTicket({ config, board, ticket, log, services: { tracker, store } });
+    await flushOutbox({ store, trackerFor, log });
+    store.exportJsonl();
+    return result;
   }
-  return runTicket({ config, board, ticket, log });
+  const board = findProject(config, ticket.projectKey);
+  if (!board) {
+    store.transition(ticket.id, 'failed');
+    store.enqueueComment(ticket.id, `Project "${ticket.projectKey}" is not configured.`);
+    await flushOutbox({ store, trackerFor, log });
+    return { status: 'failed' };
+  }
+  const result = await runTicket({
+    config,
+    board,
+    ticket,
+    log,
+    services: { tracker: projectTrackerFacade({ store, board, cache }), store },
+  });
+  await flushOutbox({ store, trackerFor, log });
+  store.exportJsonl();
+  return result;
 }
 
 function heartbeat(config, phase = 'ready') {
@@ -358,7 +555,9 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
 
   if (cmd === 'once') {
-    const result = await (dryRun ? tick(config, { dryRun }) : withOperationLock(baseDir, () => tick(config)));
+    const result = await (dryRun
+      ? withStore(config, () => tick(config, { dryRun }))
+      : withOperationLock(baseDir, () => withStore(config, () => tick(config))));
     if (result?.status === 'blocked') throw new Error(`tick blocked: ${result.reason || 'reconciliation failed'}`);
   } else if (cmd === 'healthcheck') {
     await healthcheck(config);
@@ -369,18 +568,21 @@ async function main() {
   } else if (cmd === 'reconcile') {
     const app = process.argv[3];
     if (app && !config.projects.some((board) => board.key === app || board.app === app)) throw new Error(`unknown project: ${app}`);
-    const result = await withOperationLock(baseDir, () => reconcileBoards(config, app));
+    const result = await withOperationLock(baseDir, () => withStore(config, () => reconcileBoards(config, app)));
     if (result.status === 'blocked') throw new Error(`${result.board} reconciliation failed: ${result.reason}`);
   } else if (cmd === 'stack') {
     const app = process.argv[3];
     const boards = config.projects.filter((board) => !app || board.key === app || board.app === app);
     if (!boards.length) throw new Error(`unknown project: ${app}`);
-    for (const board of boards) console.log(JSON.stringify(await integration.stackStatus({ config, board, tracker: getProjectTracker(board, { log }) }), null, 2));
+    await withStore(config, async () => {
+      const cache = trackerCache();
+      for (const board of boards) console.log(JSON.stringify(await integration.stackStatus({ config, board, tracker: projectTrackerFacade({ store: config.store, board, cache }) }), null, 2));
+    });
   } else if (cmd === 'loop') {
     log(`ticket-runner starting: ${config.projects.map((b) => b.key || b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
     if (checkForSelfUpdate(config)) process.exit(75);
     try {
-      await recoverStaleClaims(config);
+      await withStore(config, (store) => recoverStaleClaims(config, store));
     } catch (error) {
       const repaired = await healServiceFailure(config, error);
       if (repaired?.status === 'deployed') process.exit(75);
@@ -390,7 +592,7 @@ async function main() {
     for (;;) {
       try {
         if (checkForSelfUpdate(config)) process.exit(75);
-        const outcome = await withOperationLock(baseDir, () => tick(config));
+        const outcome = await withOperationLock(baseDir, () => withStore(config, () => tick(config)));
         heartbeat(config);
         if (outcome?.status === 'restart_required') process.exit(75);
       } catch (e) {
