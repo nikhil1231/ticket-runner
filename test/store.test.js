@@ -172,6 +172,21 @@ test('setMirrorState records hash and stops re-mirroring identical payloads', (t
   assert.equal(store.outboxDue().length, 0);
 });
 
+test('retargetTracker clears remote identity and queues a mirror create', (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'notion-page', shortId: 'abc123abc123' });
+  const retargeted = store.retargetTracker(ticket.id, {
+    tracker: 'github',
+    trackerId: null,
+    trackerMeta: { migratedFrom: { tracker: 'notion', trackerId: 'notion-page' } },
+  });
+  assert.equal(retargeted.tracker, 'github');
+  assert.equal(retargeted.trackerId, null);
+  assert.equal(retargeted.trackerMeta.migratedFrom.trackerId, 'notion-page');
+  const ops = store.pendingOutbox(ticket.id);
+  assert.equal(ops.filter((op) => op.op === 'mirror').length, 1);
+});
+
 test('stacks and repairs round-trip', (t) => {
   const { store } = fixture(t);
   store.saveStack('caligo', { status: 'deployed', baseSha: 'b', compositeSha: 'c', tickets: [{ shortId: 'x' }], fingerprint: 'fp' });

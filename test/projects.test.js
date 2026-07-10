@@ -87,6 +87,40 @@ test('resolveProjects prefers Notion registry and filters enabled rows', async (
   assert.equal(config.projectsByKey.demo.databaseId, 'ticket-db');
 });
 
+test('resolveProjects prefers local config projects over legacy Notion registry', async () => {
+  let queried = false;
+  const notion = {
+    queryDatabase: async () => {
+      queried = true;
+      return [];
+    },
+  };
+  const config = {
+    baseDir: process.cwd(),
+    projectRegistry: { databaseId: 'legacy-registry' },
+    projects: [{
+      key: 'local',
+      tracker: { type: 'github', owner: 'acme', repo: 'widgets', projectNumber: 1 },
+      repoPath: '.',
+    }],
+  };
+  const projects = await resolveProjects(config, notion);
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].key, 'local');
+  assert.equal(projects[0].tracker.type, 'github');
+  assert.equal(queried, false);
+});
+
+test('normalizes explicit GitHub trackers without a Notion database ID', () => {
+  const project = normalizeProject({ baseDir: process.cwd() }, {
+    key: 'widgets',
+    repoPath: '.',
+    tracker: { type: 'github', owner: 'acme', repo: 'widgets', projectNumber: 7 },
+  });
+  assert.equal(project.databaseId, '');
+  assert.equal(project.tracker.owner, 'acme');
+});
+
 test('resolveProjects keeps legacy boards working', async () => {
   const config = {
     baseDir: process.cwd(),
