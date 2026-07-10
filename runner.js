@@ -20,6 +20,7 @@ const { repairRunner } = require('./lib/self-heal');
 const { resolveProjects, findProject, resolveIncubatorProject } = require('./lib/projects');
 const { openDb, closeDb } = require('./lib/db');
 const { createStore } = require('./lib/store');
+const { getProjectTracker, getIncubatorTracker } = require('./lib/trackers');
 
 const baseDir = __dirname;
 
@@ -43,29 +44,15 @@ function loadConfig() {
   return config;
 }
 
-const QUEUE_FILTER = {
-  and: [
-    { property: 'For AI', checkbox: { equals: true } },
-    {
-      or: [
-        { property: 'Status', status: { equals: 'Backlog' } },
-        { property: 'Status', status: { equals: 'Not started' } },
-      ],
-    },
-  ],
-};
-
 async function findCandidates(config) {
   const all = [];
   for (const board of config.projects) {
-    const pages = await notion.queryDatabase(board.databaseId, QUEUE_FILTER);
-    for (const page of pages) all.push({ board, page, ticket: extractTicket(page) });
+    const tracker = getProjectTracker(board, { log });
+    for (const ticket of await tracker.listQueue()) all.push({ board, ticket });
   }
-  if (config.incubator?.databaseId) {
-    const pages = await notion.queryDatabase(config.incubator.databaseId, {
-      property: 'Status', status: { equals: 'Not started' },
-    });
-    for (const page of pages) {
+  const incubatorTracker = getIncubatorTracker(config, { log });
+  if (incubatorTracker) {
+    for (const page of await incubatorTracker.pagesByStatus('Not started')) {
       const ticket = extractIncubatorTicket(page);
       const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
       all.push({ type: 'incubator', board, page, ticket });
@@ -77,64 +64,48 @@ async function findCandidates(config) {
 
 async function recoverStaleClaims(config) {
   for (const board of config.projects) {
-    const pages = await notion.queryDatabase(board.databaseId, {
-      and: [
-        { property: 'For AI', checkbox: { equals: true } },
-        { property: 'Status', status: { equals: 'In progress' } },
-      ],
-    });
-    for (const page of pages) {
-      const ticket = extractTicket(page);
+    const tracker = getProjectTracker(board, { log });
+    for (const ticket of await tracker.listStale()) {
       if (ticket.attempts < config.maxAttempts) {
         log(`stale claim "${ticket.title}" (${board.key || board.app}) - requeuing`);
-        await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Not started' } } });
-        await notion.safeComment(ticket.pageId, `Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`, log);
+        await tracker.mirror(ticket, { status: 'queued' });
+        await tracker.comment(ticket, `Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`);
       } else {
         log(`stale claim "${ticket.title}" (${board.key || board.app}) - max attempts reached, marking Failed`);
-        await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Failed' } } });
-        await notion.safeComment(ticket.pageId, `Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`, log);
+        await tracker.mirror(ticket, { status: 'failed' });
+        await tracker.comment(ticket, `Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`);
       }
     }
   }
-  if (config.incubator?.databaseId) {
-    const pages = await notion.queryDatabase(config.incubator.databaseId, {
-      property: 'Status', status: { equals: 'In progress' },
-    });
-    for (const page of pages) {
+  const incubatorTracker = getIncubatorTracker(config, { log });
+  if (incubatorTracker) {
+    for (const page of await incubatorTracker.pagesByStatus('In progress')) {
       const ticket = extractIncubatorTicket(page);
-      const status = recoveryStatus(ticket, config.maxAttempts);
-      log(`stale incubator claim "${ticket.title}" - ${status === 'Not started' ? 'requeuing' : 'marking Failed'}`);
-      await notion.updatePage(ticket.pageId, { Status: { status: { name: status } } });
-      await notion.safeComment(ticket.pageId, status === 'Not started'
+      const requeue = ticket.attempts < config.maxAttempts;
+      log(`stale incubator claim "${ticket.title}" - ${requeue ? 'requeuing' : 'marking Failed'}`);
+      await incubatorTracker.mirror(ticket, { status: requeue ? 'queued' : 'failed' });
+      await incubatorTracker.comment(ticket, requeue
         ? `Runner restarted during planning (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`
-        : `Runner restarted during planning and max attempts (${config.maxAttempts}) were reached.`, log);
+        : `Runner restarted during planning and max attempts (${config.maxAttempts}) were reached.`);
     }
   }
 }
 
 async function processIncubatorHandoffs(config) {
-  if (!config.incubator?.databaseId) return;
-  const pages = await notion.queryDatabase(config.incubator.databaseId, {
-    property: 'Status', status: { equals: 'Done' },
-  });
-  for (const page of pages) {
+  const incubatorTracker = getIncubatorTracker(config, { log });
+  if (!incubatorTracker) return;
+  for (const page of await incubatorTracker.pagesByStatus('Done')) {
     const ticket = extractIncubatorTicket(page);
     const board = resolveIncubatorProject(config, page) || resolveIncubatorProject(config, ticket);
-    await handoffTicket({ config, ticket, board, log });
+    await handoffTicket({ config, ticket, board, log, services: { tracker: incubatorTracker } });
   }
 }
 
 async function processForceDeploys(config) {
   for (const board of config.projects) {
-    const pages = await notion.queryDatabase(board.databaseId, {
-      and: [
-        { property: 'Status', status: { equals: 'In review' } },
-        { property: 'Force deploy', checkbox: { equals: true } },
-      ],
-    });
-    for (const page of pages) {
-      const ticket = extractTicket(page);
-      await forceDeploy({ baseDir, config, board, ticket, notion, integration, log });
+    const tracker = getProjectTracker(board, { log });
+    for (const ticket of await tracker.listForceDeploy()) {
+      await forceDeploy({ baseDir, config, board, ticket, tracker, integration, log });
     }
   }
 }
@@ -142,17 +113,12 @@ async function processForceDeploys(config) {
 async function processPromotions(config) {
   const pending = [];
   for (const board of config.projects) {
-    const pages = await notion.queryDatabase(board.databaseId, {
-      and: [
-        { property: 'For AI', checkbox: { equals: true } },
-        { property: 'Status', status: { equals: 'Done' } },
-      ],
-    });
-    for (const page of pages) pending.push({ board, ticket: extractTicket(page) });
+    const tracker = getProjectTracker(board, { log });
+    for (const ticket of await tracker.listDone()) pending.push({ board, ticket, tracker });
   }
   pending.sort((a, b) => a.ticket.createdTime.localeCompare(b.ticket.createdTime));
   for (const item of pending) {
-    const result = await integration.promoteTicket({ config, ...item, notion, log });
+    const result = await integration.promoteTicket({ config, board: item.board, ticket: item.ticket, tracker: item.tracker, log });
     if (result.status === 'remote_advanced') {
       log(`main advanced while promoting "${item.ticket.title}"; retrying next tick`);
       return { status: 'blocked', reason: 'remote_advanced' };
@@ -163,7 +129,8 @@ async function processPromotions(config) {
 
 async function reconcileBoards(config, onlyApp) {
   for (const board of config.projects.filter((item) => !onlyApp || item.key === onlyApp || item.app === onlyApp)) {
-    const result = await integration.reconcileBoard({ config, board, notion, eas, log });
+    const tracker = getProjectTracker(board, { log });
+    const result = await integration.reconcileBoard({ config, board, tracker, eas, log });
     if (['fetch_failed', 'validation_failed', 'publish_failed'].includes(result.status)) {
       log(`${board.key || board.app} stack reconciliation blocked: ${result.error || result.status}`);
       return { status: 'blocked', board: board.key || board.app, reason: result.status };
@@ -196,8 +163,9 @@ async function tick(config, { dryRun = false } = {}) {
   const { board, ticket } = candidates[0];
   if (candidates[0].type === 'incubator') {
     if (!board) {
-      await notion.updatePage(ticket.pageId, { Status: { status: { name: 'Needs info' } } });
-      await notion.safeComment(ticket.pageId, 'Select a Project, then return this ticket to Not started.', log);
+      const incubatorTracker = getIncubatorTracker(config, { log });
+      await incubatorTracker.mirror(ticket, { status: 'needs_info' });
+      await incubatorTracker.comment(ticket, 'Select a Project, then return this ticket to Not started.');
       return;
     }
     return runIncubatorTicket({ config, board, ticket, log });
@@ -407,7 +375,7 @@ async function main() {
     const app = process.argv[3];
     const boards = config.projects.filter((board) => !app || board.key === app || board.app === app);
     if (!boards.length) throw new Error(`unknown project: ${app}`);
-    for (const board of boards) console.log(JSON.stringify(await integration.stackStatus({ config, board, notion }), null, 2));
+    for (const board of boards) console.log(JSON.stringify(await integration.stackStatus({ config, board, tracker: getProjectTracker(board, { log }) }), null, 2));
   } else if (cmd === 'loop') {
     log(`ticket-runner starting: ${config.projects.map((b) => b.key || b.app).join(', ')} | poll ${config.pollIntervalMs / 1000}s | timeout ${Math.round(config.runTimeoutMs / 60000)}m | max ${config.maxAttempts} attempts`);
     if (checkForSelfUpdate(config)) process.exit(75);
