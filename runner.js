@@ -18,6 +18,8 @@ const healingState = require('./lib/healing-state');
 const { classifyFailure } = require('./lib/failure');
 const { repairRunner } = require('./lib/self-heal');
 const { resolveProjects, findProject, resolveIncubatorProject } = require('./lib/projects');
+const { openDb, closeDb } = require('./lib/db');
+const { createStore } = require('./lib/store');
 
 const baseDir = __dirname;
 
@@ -239,7 +241,39 @@ async function healthcheck(config) {
     }
   }
   await notion.getCurrentBot();
-  console.log('healthcheck ok: config, target repositories, and Notion are reachable');
+  const db = openDb(baseDir);
+  try {
+    const integrity = db.prepare('PRAGMA integrity_check').get().integrity_check;
+    if (integrity !== 'ok') throw new Error(`ticket store integrity check failed: ${integrity}`);
+  } finally {
+    closeDb(db);
+  }
+  console.log('healthcheck ok: config, target repositories, ticket store, and Notion are reachable');
+}
+
+// Introspection over the local ticket store. Read-only except `export`, which
+// writes the JSONL snapshot. `doctor` runs an integrity check and surfaces
+// parked mirror ops that would otherwise only appear in logs.
+function dbCommand(action) {
+  const db = openDb(baseDir);
+  try {
+    const store = createStore({ baseDir, db });
+    if (!action || action === 'status') {
+      console.log(JSON.stringify(store.stats(), null, 2));
+    } else if (action === 'export') {
+      console.log(JSON.stringify(store.exportJsonl(), null, 2));
+    } else if (action === 'doctor') {
+      const integrity = db.prepare('PRAGMA integrity_check').get().integrity_check;
+      const stats = store.stats();
+      console.log(JSON.stringify({ integrity, ...stats }, null, 2));
+      if (integrity !== 'ok') throw new Error(`integrity check failed: ${integrity}`);
+      if (stats.outboxParked > 0) log(`WARNING: ${stats.outboxParked} parked mirror op(s) — a tracker artifact may be unreachable`);
+    } else {
+      throw new Error(`unknown db action: ${action} (use: status | export | doctor)`);
+    }
+  } finally {
+    closeDb(db);
+  }
 }
 
 async function cleanup(config) {
@@ -339,6 +373,11 @@ function checkForSelfUpdate(config) {
 
 async function main() {
   loadEnv();
+  // `db` introspection is purely local — no Notion token or project resolution needed.
+  if (process.argv[2] === 'db') {
+    dbCommand(process.argv[3]);
+    return;
+  }
   if (!process.env.NOTION_TOKEN) {
     console.error('NOTION_TOKEN is not set. Copy .env.example to .env and fill it in.');
     process.exit(1);
@@ -398,7 +437,7 @@ async function main() {
       await sleep(config.pollIntervalMs);
     }
   } else {
-    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [project] | reconcile [project] | cleanup)`);
+    console.error(`unknown command: ${cmd} (use: loop | once [--dry-run] | healthcheck | stack [project] | reconcile [project] | cleanup | db [status|export|doctor])`);
     process.exit(1);
   }
 }
