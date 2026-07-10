@@ -58,10 +58,12 @@ journalctl --user -u ticket-runner-dashboard.service -f
 ```
 
 Both processes share `state/runner.db` (the runner writes, the dashboard reads via
-WAL), so they must run from the same checkout. The dashboard binds `127.0.0.1:4600`
-by default; set `DASHBOARD_HOST=0.0.0.0` and/or `DASHBOARD_PORT` in the dashboard
-unit to expose or move it. Edit `WorkingDirectory=` in the units if your checkout
-lives outside `~/Documents/Programming/AI/ticket-runner`.
+WAL), so they must run from the same checkout. The dashboard unit binds
+`0.0.0.0:4600`; it has **no authentication**, so anyone who can reach the host on
+that port sees ticket contents and repo paths. Set `DASHBOARD_HOST=127.0.0.1` in
+the unit to restrict it to loopback (the code default when the env var is unset),
+or `DASHBOARD_PORT` to move it. Edit `WorkingDirectory=` in the units if your
+checkout lives outside `~/Documents/Programming/AI/ticket-runner`.
 
 ## Workflow
 
