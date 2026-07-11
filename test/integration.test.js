@@ -169,6 +169,24 @@ test('a conflicting ticket is parked while compatible tickets still deploy', asy
   assert.match(tracker.comments[0].message, /shared\.txt/);
 });
 
+test('reconciliation replaces an existing generated integration branch worktree', async (t) => {
+  const f = fixture(t);
+  const staleDir = path.join(f.baseDir, 'worktrees', 'caligo', 'stale-integration-caligo');
+  fs.mkdirSync(path.dirname(staleDir), { recursive: true });
+  git(f.repoPath, ['worktree', 'add', '-b', 'integration/caligo', staleDir, 'main']);
+  const page = makePage('00000000-0000-0000-0000-000000000013', 'Stale branch', '2026-01-01T00:00:00Z');
+  addTicket(f, page, 'stale.txt', 'stale\n');
+  const tracker = trackerFixture([page]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
+
+  assert.equal(result.status, 'deployed');
+  assert.equal(result.branch, 'integration/caligo');
+  assert.equal(fs.existsSync(staleDir), false);
+  assert.equal(git(integrationDir(f), ['branch', '--show-current']), 'integration/caligo');
+});
+
 test('Done promotion merges only the ticket, pushes main, and finalizes Notion', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000021', 'Promote me', '2026-01-01T00:00:00Z', 'Done');
