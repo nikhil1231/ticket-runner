@@ -46,6 +46,9 @@ function loadConfig() {
   const config = JSON.parse(fs.readFileSync(path.join(baseDir, 'config.json'), 'utf8'));
   if (config.repoPath) config.repoPath = path.resolve(baseDir, config.repoPath);
   config.baseDir = baseDir;
+  if (config.pollIntervalMs === undefined) {
+    config.pollIntervalMs = 15000;
+  }
   return config;
 }
 
