@@ -187,3 +187,22 @@ test('pollCommands ignores issues outside the configured Project v2 project', as
 
   assert.deepEqual(commands.map((command) => command.trackerId), ['5']);
 });
+
+test('pollCommands parses GitHub default capitalization for in-progress status', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(5, {
+    number: 5,
+    node_id: 'ISSUE_5',
+    title: 'Moving',
+    body: 'Brief',
+    labels: [{ name: 'for-ai' }],
+    projectStatus: 'In Progress',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands[0].snapshot.status, 'in_progress');
+});
