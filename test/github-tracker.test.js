@@ -33,6 +33,7 @@ function fakeTransport() {
           title: body.title,
           body: body.body,
           labels: (body.labels || []).map((name) => ({ name })),
+          assignees: (body.assignees || []).map((login) => ({ login })),
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-01T00:00:00Z',
         };
@@ -51,7 +52,13 @@ function fakeTransport() {
       if (method === 'POST' && /\/comments$/.test(apiPath)) return { status: 201, data: { id: 1, body: body.body } };
       if (method === 'GET' && /\/comments/.test(apiPath)) return { status: 200, data: [] };
       if (method === 'GET' && /\/issues\?/.test(apiPath)) {
-        return { status: 200, etag: 'etag-1', data: [...issues.values()] };
+        const query = new URLSearchParams(apiPath.slice(apiPath.indexOf('?') + 1));
+        const assignee = query.get('assignee');
+        const data = [...issues.values()].filter((issue) => {
+          if (!assignee || assignee === '*') return (issue.assignees || []).length > 0;
+          return (issue.assignees || []).some((item) => item.login === assignee);
+        });
+        return { status: 200, etag: 'etag-1', data };
       }
       if (method === 'DELETE' && /\/labels\//.test(apiPath)) return { status: 204, data: null };
       if (method === 'PUT' && /\/labels$/.test(apiPath)) return { status: 200, data: body.labels.map((name) => ({ name })) };
@@ -111,7 +118,7 @@ test('upsertMirror creates an issue, adds it to Project v2, and updates status',
   assert.deepEqual(transport.calls.rest[0], {
     method: 'POST',
     path: '/repos/acme/widgets/issues',
-    body: { title: 'Build thing', body: 'Brief', labels: ['for-ai'] },
+    body: { title: 'Build thing', body: 'Brief', labels: [], assignees: ['ticket-runner-bot'] },
     opts: {},
   });
   assert.ok(transport.calls.graphql.some((call) => /addProjectV2ItemById/.test(call.query)));
@@ -137,7 +144,8 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
     node_id: 'ISSUE_5',
     title: 'New issue',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }],
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
   });
@@ -146,9 +154,20 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
     node_id: 'ISSUE_6',
     title: 'Force me',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }, { name: 'force-deploy' }],
+    labels: [{ name: 'force-deploy' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T00:00:00Z',
+  });
+  transport.issues.set(7, {
+    number: 7,
+    node_id: 'ISSUE_7',
+    title: 'Unassigned',
+    body: 'Brief',
+    labels: [{ name: 'force-deploy' }],
+    assignees: [],
+    created_at: '2026-01-03T00:00:00Z',
+    updated_at: '2026-01-03T00:00:00Z',
   });
   const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '6', projectKey: 'widgets', title: 'Force me', status: 'in_review' });
   const gh = tracker(transport);
@@ -156,6 +175,8 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
 
   assert.equal(commands[0].type, 'create');
   assert.equal(commands[0].snapshot.trackerId, '5');
+  assert.ok(!commands.some((command) => command.trackerId === '7'));
+  assert.ok(transport.calls.rest.some((call) => call.method === 'GET' && call.path.includes('assignee=ticket-runner-bot')));
   assert.ok(commands.some((command) => command.type === 'force_deploy' && command.ticket.id === existing.id));
   assert.ok(transport.calls.rest.some((call) => call.method === 'DELETE' && call.path.includes('/labels/force-deploy')));
   assert.deepEqual(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
@@ -169,7 +190,8 @@ test('pollCommands ignores issues outside the configured Project v2 project', as
     node_id: 'ISSUE_5',
     title: 'In project',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }],
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
   });
@@ -178,7 +200,8 @@ test('pollCommands ignores issues outside the configured Project v2 project', as
     node_id: 'ISSUE_6',
     title: 'Other project',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }],
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T00:00:00Z',
     skipProject: true,
@@ -198,7 +221,8 @@ test('pollCommands skips project-filtered polling when the configured Project v2
     node_id: 'ISSUE_5',
     title: 'In project',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }],
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
   });
@@ -225,7 +249,8 @@ test('pollCommands parses GitHub default capitalization for in-progress status',
     node_id: 'ISSUE_5',
     title: 'Moving',
     body: 'Brief',
-    labels: [{ name: 'for-ai' }],
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
     projectStatus: 'In Progress',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',

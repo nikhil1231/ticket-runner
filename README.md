@@ -1,10 +1,10 @@
 # ticket-runner
 
-Polls Notion ticket boards for coding tickets flagged **For AI**, and the Ticket
-Incubator for feature briefs. It plans or implements one ticket at a time with
-headless coding CLIs in isolated git worktrees. Notion owns ticket intent and the
-project registry; ignored local state records exact Git commits and testing stack
-heads.
+Polls Notion ticket boards for coding tickets flagged **For AI**, GitHub issues
+assigned to the runner bot, and the Ticket Incubator for feature briefs. It
+plans or implements one ticket at a time with headless coding CLIs in isolated
+git worktrees. Notion owns the project registry; ignored local state records
+exact Git commits and testing stack heads.
 
 Fallback policies are ordered provider/model candidates. Feature implementation
 and incubation use Codex, then configured fallbacks. Review uses the review
@@ -67,7 +67,8 @@ checkout lives outside `~/Documents/Programming/AI/ticket-runner`.
 
 ## Workflow
 
-1. Write a ticket on a project board and check **For AI**.
+1. Write a ticket on a project board and queue it for the runner: check
+   **For AI** on Notion boards, or assign the GitHub issue to the runner bot.
 2. The runner claims it, creates `worktrees/<project>/<shortId>` on branch
    `ai/<shortId>`, runs that project's setup commands, and spawns the coding CLI.
 3. On approval, the runner composes the project's cumulative Testing stack,
@@ -85,7 +86,7 @@ Create incubator tickets with a title/body and select `Project` (relation to the
 registry) or `Project key`. The runner inspects the selected project in a
 detached worktree and appends an **AI implementation plan**. Moving the incubator
 ticket to **Done** moves the same page to the target project board, sets
-**For AI**, and queues it as **Not started**.
+**For AI** on Notion-backed boards, and queues it as **Not started**.
 
 ## Project Registry
 
