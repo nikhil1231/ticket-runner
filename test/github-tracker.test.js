@@ -84,7 +84,7 @@ function fakeTransport() {
   };
 }
 
-function tracker(transport) {
+function tracker(transport, overrides = {}) {
   return createGithubTracker({
     owner: 'acme',
     repo: 'widgets',
@@ -94,6 +94,7 @@ function tracker(transport) {
     engineFieldId: 'ENGINE_FIELD',
     modelFieldId: 'MODEL_FIELD',
     transport,
+    ...overrides,
   });
 }
 
@@ -186,6 +187,34 @@ test('pollCommands ignores issues outside the configured Project v2 project', as
   const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
 
   assert.deepEqual(commands.map((command) => command.trackerId), ['5']);
+});
+
+test('pollCommands skips project-filtered polling when the configured Project v2 node is missing', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const logs = [];
+  transport.issues.set(5, {
+    number: 5,
+    node_id: 'ISSUE_5',
+    title: 'In project',
+    body: 'Brief',
+    labels: [{ name: 'for-ai' }],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const originalGraphql = transport.graphql;
+  transport.graphql = async (query, variables) => {
+    if (/ProjectItems/.test(query)) {
+      throw new Error(`GitHub GraphQL errors: [{"type":"NOT_FOUND","path":["node"],"message":"Could not resolve to a node with the global id of 'PROJECT_1'."}]`);
+    }
+    return originalGraphql(query, variables);
+  };
+  const gh = tracker(transport, { log: (message) => logs.push(message) });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.deepEqual(commands, []);
+  assert.equal(store.getKv('cursor:github:acme/widgets:issues:since', null), null);
+  assert.ok(logs.some((message) => message.includes('github project lookup failed')));
 });
 
 test('pollCommands parses GitHub default capitalization for in-progress status', async (t) => {
