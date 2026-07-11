@@ -68,11 +68,13 @@ function fakeTransport() {
         return {
           node: {
             items: {
-              nodes: [...issues.values()].map((issue) => ({
-                id: issue.projectItemId || 'ITEM_EXISTING',
-                content: { number: issue.number },
-                fieldValueByName: { name: issue.projectStatus || 'Not started' },
-              })),
+              nodes: [...issues.values()]
+                .filter((issue) => !issue.skipProject)
+                .map((issue) => ({
+                  id: issue.projectItemId || 'ITEM_EXISTING',
+                  content: { number: issue.number },
+                  fieldValueByName: { name: issue.projectStatus || 'Not started' },
+                })),
             },
           },
         };
@@ -156,4 +158,32 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
   assert.ok(commands.some((command) => command.type === 'force_deploy' && command.ticket.id === existing.id));
   assert.ok(transport.calls.rest.some((call) => call.method === 'DELETE' && call.path.includes('/labels/force-deploy')));
   assert.deepEqual(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
+});
+
+test('pollCommands ignores issues outside the configured Project v2 project', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(5, {
+    number: 5,
+    node_id: 'ISSUE_5',
+    title: 'In project',
+    body: 'Brief',
+    labels: [{ name: 'for-ai' }],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  transport.issues.set(6, {
+    number: 6,
+    node_id: 'ISSUE_6',
+    title: 'Other project',
+    body: 'Brief',
+    labels: [{ name: 'for-ai' }],
+    created_at: '2026-01-02T00:00:00Z',
+    updated_at: '2026-01-02T00:00:00Z',
+    skipProject: true,
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.deepEqual(commands.map((command) => command.trackerId), ['5']);
 });

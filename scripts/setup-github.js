@@ -13,6 +13,7 @@ const LABELS = {
   'force-deploy': 'One-shot human override for the testing stack',
 };
 const STATUS_OPTIONS = ['Not started', 'In progress', 'Needs info', 'In review', 'Testing', 'Done', 'Failed', 'Cancelled'];
+const STATUS_COLORS = ['GRAY', 'BLUE', 'YELLOW', 'ORANGE', 'PURPLE', 'GREEN', 'RED', 'PINK'];
 
 function loadEnv() {
   const envPath = path.join(baseDir, '.env');
@@ -109,12 +110,42 @@ async function createTextField(projectId, name) {
   return data.createProjectV2Field.projectV2Field;
 }
 
+async function createSingleSelectField(projectId, name, options) {
+  const data = await github.graphql(`
+    mutation CreateSingleSelectField($projectId: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+      createProjectV2Field(input: { projectId: $projectId, name: $name, dataType: SINGLE_SELECT, singleSelectOptions: $options }) {
+        projectV2Field {
+          ... on ProjectV2SingleSelectField { id name dataType options { id name } }
+        }
+      }
+    }`, {
+    projectId,
+    name,
+    options: options.map((option, index) => ({
+      name: option,
+      color: STATUS_COLORS[index % STATUS_COLORS.length],
+      description: '',
+    })),
+  });
+  return data.createProjectV2Field.projectV2Field;
+}
+
 function statusField(fields) {
   const candidates = fields.filter((field) => field.name === 'AI Status' || field.name === 'Status');
   return candidates.find((field) => {
     const names = new Set((field.options || []).map((option) => option.name));
     return STATUS_OPTIONS.every((name) => names.has(name));
-  }) || candidates[0];
+  });
+}
+
+async function ensureStatusField(projectId, fields) {
+  const status = statusField(fields);
+  if (status) return status;
+  const existingAiStatus = fields.find((field) => field.name === 'AI Status');
+  if (!existingAiStatus) return createSingleSelectField(projectId, 'AI Status', STATUS_OPTIONS);
+  const names = new Set((existingAiStatus.options || []).map((option) => option.name));
+  const missing = STATUS_OPTIONS.filter((name) => !names.has(name));
+  throw new Error(`AI Status is missing options: ${missing.join(', ')}`);
 }
 
 async function setup({ owner, repo, title }) {
@@ -124,10 +155,8 @@ async function setup({ owner, repo, title }) {
   const project = await ensureProject(title || `${repo} AI Tickets`);
   await linkRepo(project.id, await repoNodeId(owner, repo));
   let fields = await projectFields(project.id);
-  const status = statusField(fields);
-  if (!status) {
-    throw new Error(`Create a Projects v2 single-select field named "AI Status" with options: ${STATUS_OPTIONS.join(', ')}`);
-  }
+  const status = await ensureStatusField(project.id, fields);
+  fields = await projectFields(project.id);
   let engine = fields.find((field) => field.name === 'Engine');
   if (!engine) {
     engine = await createTextField(project.id, 'Engine');
