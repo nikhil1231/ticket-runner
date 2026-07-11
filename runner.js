@@ -248,15 +248,16 @@ async function processStoreActions(config, store, actions, cache) {
 }
 
 async function reconcileBoards(config, onlyApp, cache = trackerCache()) {
+  const blocked = [];
   for (const board of config.projects.filter((item) => !onlyApp || item.key === onlyApp || item.app === onlyApp)) {
     const tracker = config.store ? projectTrackerFacade({ store: config.store, board, cache }) : getProjectTracker(board, { log });
     const result = await integration.reconcileBoard({ config, board, tracker, eas, log });
     if (['fetch_failed', 'validation_failed', 'publish_failed'].includes(result.status)) {
       log(`${board.key || board.app} stack reconciliation blocked: ${result.error || result.status}`);
-      return { status: 'blocked', board: board.key || board.app, reason: result.status };
+      blocked.push({ board: board.key || board.app, reason: result.status });
     }
   }
-  return { status: 'ok' };
+  return blocked.length ? { status: 'blocked', blocked } : { status: 'ok' };
 }
 
 async function tick(config, { dryRun = false } = {}) {
@@ -271,7 +272,7 @@ async function tick(config, { dryRun = false } = {}) {
     const processed = await processStoreActions(config, store, actions, cache);
     if (processed.status === 'blocked') return processed;
     const reconciled = await reconcileBoards(config, undefined, cache);
-    if (reconciled.status === 'blocked') return reconciled;
+    if (reconciled.status === 'blocked') log(`stack deploy blocked for ${reconciled.blocked.map((b) => b.board).join(', ')}; continuing to claim other work`);
   }
   const candidates = store.readyTickets();
   if (!candidates.length) {
@@ -561,7 +562,7 @@ async function main() {
     const app = process.argv[3];
     if (app && !config.projects.some((board) => board.key === app || board.app === app)) throw new Error(`unknown project: ${app}`);
     const result = await withOperationLock(baseDir, () => withStore(config, () => reconcileBoards(config, app)));
-    if (result.status === 'blocked') throw new Error(`${result.board} reconciliation failed: ${result.reason}`);
+    if (result.status === 'blocked') throw new Error(`reconciliation failed: ${result.blocked.map((b) => `${b.board} (${b.reason})`).join(', ')}`);
   } else if (cmd === 'stack') {
     const app = process.argv[3];
     const boards = config.projects.filter((board) => !app || board.key === app || board.app === app);
