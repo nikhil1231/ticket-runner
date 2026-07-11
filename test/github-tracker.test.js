@@ -150,7 +150,7 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T00:00:00Z',
   });
-  const existing = store.upsertFromTracker({ tracker: 'github', trackerId: '6', projectKey: 'widgets', title: 'Force me', status: 'in_review' });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '6', projectKey: 'widgets', title: 'Force me', status: 'in_review' });
   const gh = tracker(transport);
   const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
 
