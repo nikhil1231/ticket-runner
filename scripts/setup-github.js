@@ -6,7 +6,6 @@ const github = require('../lib/github');
 
 const baseDir = path.resolve(__dirname, '..');
 const LABELS = {
-  'for-ai': 'Tickets the runner may pick up',
   incubator: 'Planning tickets awaiting implementation handoff',
   epic: 'Epic-level parent issue',
   mission: 'Mission-level parent issue',
@@ -32,6 +31,14 @@ async function ensureLabel(owner, repo, name, description) {
   } catch (error) {
     if (!/-> 404:/.test(error.message)) throw error;
     await github.rest('POST', `/repos/${owner}/${repo}/labels`, body);
+  }
+}
+
+async function deleteLabel(owner, repo, name) {
+  try {
+    await github.rest('DELETE', `/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`);
+  } catch (error) {
+    if (!/-> 404:/.test(error.message)) throw error;
   }
 }
 
@@ -148,7 +155,8 @@ async function ensureStatusField(projectId, fields) {
   throw new Error(`AI Status is missing options: ${missing.join(', ')}`);
 }
 
-async function setup({ owner, repo, title }) {
+async function setup({ owner, repo, title, assignee = 'ticket-runner-bot' }) {
+  await deleteLabel(owner, repo, 'for-ai');
   for (const [name, description] of Object.entries(LABELS)) {
     await ensureLabel(owner, repo, name, description);
   }
@@ -175,6 +183,7 @@ async function setup({ owner, repo, title }) {
     statusOptions,
     engineFieldId: engine.id,
     modelFieldId: model.id,
+    assignee,
   };
 }
 
