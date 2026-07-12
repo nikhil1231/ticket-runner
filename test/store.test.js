@@ -76,7 +76,9 @@ test('claimNext respects projectKey filter', (t) => {
 test('transition table rejects illegal moves and allows self-transitions', (t) => {
   const { store } = fixture(t);
   const ticket = seed(store, { trackerId: 'p' });
-  assert.throws(() => store.transition(ticket.id, 'done'), /illegal transition queued -> done/);
+  // queued -> done is legal (used to auto-complete epics once all children are
+  // done/cancelled) but queued -> testing is still not a direct path.
+  assert.throws(() => store.transition(ticket.id, 'testing'), /illegal transition queued -> testing/);
   store.transition(ticket.id, 'in_progress');
   assert.throws(() => store.transition(ticket.id, 'done'), /illegal transition in_progress -> done/);
   store.transition(ticket.id, 'testing');
@@ -221,6 +223,58 @@ test('migrations are idempotent across reopen', (t) => {
   assert.equal(store2.getByTrackerId('notion', 'persist').title, 'Persisted');
   assert.equal(db2.prepare('PRAGMA user_version').get().user_version, 1);
   closeDb(db2);
+});
+
+test('createLocalTicket inserts with no trackerId and enqueues a mirror create', (t) => {
+  const { store } = fixture(t);
+  const mission = seed(store, { trackerId: 'mission-1', kind: 'mission', title: 'Mission' });
+  const epic = store.createLocalTicket({
+    projectKey: 'caligo', kind: 'epic', title: 'Epic one', body: 'do the thing',
+    parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo',
+  });
+  assert.equal(epic.trackerId, null);
+  assert.equal(epic.tracker, 'github:acme/caligo');
+  assert.equal(epic.parentId, mission.id);
+  assert.equal(epic.status, 'in_review');
+  assert.ok(epic.shortId);
+  const ops = store.pendingOutbox(epic.id);
+  assert.equal(ops.filter((op) => op.op === 'mirror').length, 1);
+});
+
+test('createLocalTicket assigns unique short ids and rejects a missing tracker', (t) => {
+  const { store } = fixture(t);
+  const a = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'A', tracker: 'notion' });
+  const b = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'B', tracker: 'notion' });
+  assert.notEqual(a.shortId, b.shortId);
+  assert.throws(() => store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'C' }), /requires tracker/);
+});
+
+test('ticketsByKind and childrenOf walk the hierarchy', (t) => {
+  const { store } = fixture(t);
+  const mission = seed(store, { trackerId: 'm', kind: 'mission', title: 'Mission' });
+  const epic1 = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 1', parentId: mission.id, tracker: 'notion' });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 2', parentId: mission.id, tracker: 'notion' });
+  const feature = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Feature under epic 1', parentId: epic1.id, tracker: 'notion' });
+
+  const epics = store.ticketsByKind('caligo', 'epic');
+  assert.equal(epics.length, 2);
+  const missionChildren = store.childrenOf(mission.id).map((tk) => tk.title);
+  assert.deepEqual(missionChildren.sort(), ['Epic 1', 'Epic 2']);
+  const epicChildren = store.childrenOf(epic1.id);
+  assert.equal(epicChildren.length, 1);
+  assert.equal(epicChildren[0].id, feature.id);
+});
+
+test('queued can transition directly to done (epic auto-completion) or cancelled (rejection)', (t) => {
+  const { store } = fixture(t);
+  const epic = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Epic', status: 'queued', tracker: 'notion' });
+  const done = store.transition(epic.id, 'done');
+  assert.equal(done.status, 'done');
+  assert.ok(done.closedAt);
+
+  const rejected = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Rejected epic', status: 'in_review', tracker: 'notion' });
+  const cancelled = store.transition(rejected.id, 'cancelled');
+  assert.equal(cancelled.status, 'cancelled');
 });
 
 test('exportJsonl is deterministic and sorted by short_id', (t) => {

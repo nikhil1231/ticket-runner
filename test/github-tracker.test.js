@@ -125,6 +125,58 @@ test('upsertMirror creates an issue, adds it to Project v2, and updates status',
   assert.ok(transport.calls.graphql.some((call) => /updateProjectV2ItemFieldValue/.test(call.query) && call.variables.optionId === 'OPT_TESTING'));
 });
 
+test('upsertMirror labels a new epic issue with the epic label', async () => {
+  const transport = fakeTransport();
+  const gh = tracker(transport);
+  await gh.upsertMirror({ title: 'Epic one', body: 'Scope', kind: 'epic', trackerMeta: {} }, { status: 'in_review' });
+  const create = transport.calls.rest.find((call) => call.method === 'POST' && call.path === '/repos/acme/widgets/issues');
+  assert.deepEqual(create.body.labels, ['epic']);
+});
+
+test('pollCommands emits cancel when the board moves an open ticket to Cancelled', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(9, {
+    number: 9,
+    node_id: 'ISSUE_9',
+    title: 'Rejected epic',
+    body: 'Brief',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Cancelled',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '9', projectKey: 'widgets', kind: 'epic', title: 'Rejected epic', status: 'in_review' });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'cancel');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands does not re-cancel a ticket already in a terminal state', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(10, {
+    number: 10,
+    node_id: 'ISSUE_10',
+    title: 'Already cancelled',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Cancelled',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '10', projectKey: 'widgets', title: 'Already cancelled', status: 'cancelled' });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 0);
+});
+
 test('appendSection replaces a managed body section', async () => {
   const transport = fakeTransport();
   const gh = tracker(transport);
