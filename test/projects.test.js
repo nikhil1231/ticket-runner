@@ -44,6 +44,18 @@ test('normalizes a generic project with validation-only publishing', () => {
   assert.equal(path.isAbsolute(project.repoPath), true);
 });
 
+test('passes through a flywheel block, defaulting to empty when absent', () => {
+  const withFlywheel = normalizeProject({ baseDir: process.cwd() }, {
+    key: 'caligo',
+    databaseId: 'tickets',
+    flywheel: { enabled: true, backlogThreshold: 3 },
+  });
+  assert.deepEqual(withFlywheel.flywheel, { enabled: true, backlogThreshold: 3 });
+
+  const withoutFlywheel = normalizeProject({ baseDir: process.cwd() }, { key: 'caligo', databaseId: 'tickets' });
+  assert.deepEqual(withoutFlywheel.flywheel, {});
+});
+
 test('parses project registry rows and command JSON', () => {
   const project = projectFromRegistryPage({ baseDir: process.cwd(), integration: {} }, page('project-page', {
     Key: title('leetcode-senpai'),
