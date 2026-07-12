@@ -7,3 +7,4 @@ node_modules/
 
 # machine-specific runtime config (untracked per host)
 config.json
+AGENTS.local.md
