@@ -63,12 +63,22 @@ async function ensureSelectOptions(databaseId, propertyName, options) {
   return dataSource(databaseId);
 }
 
+const KIND_OPTIONS = [
+  { name: 'feature', color: 'blue' },
+  { name: 'query', color: 'gray' },
+  { name: 'incubator', color: 'purple' },
+  { name: 'epic', color: 'orange' },
+  { name: 'mission', color: 'red' },
+];
+
 async function setupAppBoard(board) {
   await addProperties(board.databaseId, {
     'Last agent': { rich_text: {} },
     'Force deploy': { checkbox: {} },
+    Kind: { select: { options: KIND_OPTIONS } },
   });
-  console.log(`${board.key || board.app}: Last agent + Force deploy ready`);
+  await ensureSelectOptions(board.databaseId, 'Kind', KIND_OPTIONS);
+  console.log(`${board.key || board.app}: Last agent + Force deploy + Kind ready`);
 }
 
 async function setupIncubator(projects) {

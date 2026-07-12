@@ -16,8 +16,8 @@ policy while excluding the exact implementation model.
    comment capabilities. Connect it to the Project Registry, Ticket Incubator,
    and each project ticket board.
 2. Copy `.env.example` to `.env` and set `NOTION_TOKEN`.
-3. Install and log in to the Codex CLI. Install Antigravity (`agy`) if you want
-   those fallback models.
+3. Install and log in to the Codex CLI. Install Antigravity (`agy`) and the
+   Claude Code CLI (`claude`) if you want those fallback/planning models.
 4. Use Node 18 or newer.
 5. Set `projectRegistry.databaseId` in `config.json` when the registry is ready.
    Legacy `boards` config is still supported as a fallback.
@@ -87,6 +87,65 @@ registry) or `Project key`. The runner inspects the selected project in a
 detached worktree and appends an **AI implementation plan**. Moving the incubator
 ticket to **Done** moves the same page to the target project board, sets
 **For AI** on Notion-backed boards, and queues it as **Not started**.
+
+## Flywheel
+
+Turns a high-level mission statement into a self-sustaining backlog, so a
+project can run with minimal human involvement beyond writing the mission and
+approving epics.
+
+1. Enable it per project with `flywheel.enabled: true` (see below).
+2. Create one ticket labeled `mission` (GitHub) or with `Kind = mission`
+   (Notion) on the project's board. Its body is the mission statement, in your
+   own words - what the project should become. Edit it any time; the runner
+   picks up changes on the next pass.
+3. The runner decomposes the mission into **epics** (`kind = epic`), parked in
+   **In review** for a one-time human approval. Move an epic to **Not started**
+   to approve it, or **Cancelled** to reject it; rejected epics are never
+   re-proposed.
+4. Once an epic is approved, the runner tops up the project's queued backlog
+   from that epic whenever it drops below `backlogThreshold`, generating
+   grounded, decision-complete feature tickets that flow through the normal
+   implementation loop. An epic auto-completes to **Done** once all of its
+   tickets are done or cancelled (with at least one done).
+
+Flywheel is a per-project maintenance pass in the tick loop, not a claimed
+ticket - a failing planner never blocks or crashes the loop, and never
+consumes a ticket's attempt budget. Failures back off with an exponential
+cooldown and post one comment on the mission per cooldown window.
+
+Config (`config.json`, per project):
+
+```json
+{
+  "projects": [{
+    "key": "caligo",
+    "flywheel": {
+      "enabled": true,
+      "backlogThreshold": 2,
+      "maxOpenTickets": 10,
+      "maxEpics": 7,
+      "maxTicketsPerPass": 3,
+      "cooldownMs": 900000
+    }
+  }],
+  "fallbackPolicies": {
+    "planner": [{ "provider": "claude", "model": "claude-opus-4-8" }, { "provider": "codex", "model": "" }]
+  }
+}
+```
+
+- `backlogThreshold` - top up when queued feature tickets under the active
+  epic drop below this.
+- `maxOpenTickets` - hard cap on non-terminal feature tickets per project.
+- `maxEpics` - cap on epics proposed per mission.
+- `maxTicketsPerPass` - cap on tickets generated per planning pass.
+- `cooldownMs` - base wait after a needs-info, all-duplicate, or failed pass;
+  failures back off exponentially from here.
+
+Planning runs are read-only: a detached worktree, no edits, no git, same
+pattern as the Ticket Incubator. `fallbackPolicies.planner` defaults to
+`claude` then `codex`.
 
 ## Project Registry
 
@@ -162,4 +221,9 @@ remains manual in v1.
 
 - **codex** (`codex exec`): sandboxed by default; the runner commits changes.
 - **antigravity** (`agy --print`): uses `.agent-task.md`; the runner owns commits.
+- **claude** (`claude -p`): headless Claude Code, primarily used for Flywheel
+  planning. Install and log in to the `claude` CLI on the runner machine.
+  Planning callers force `--permission-mode plan` and disallow file-editing
+  tools; other callers default to `--permission-mode bypassPermissions` inside
+  the sandboxed worktree. The runner owns commits, same as the other engines.
 - Prompts are never passed on the command line.

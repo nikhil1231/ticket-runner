@@ -197,6 +197,7 @@ async function main() {
   if (!owner || !repo) throw new Error('usage: node scripts/setup-github.js <owner> <repo> [project title]');
   const tracker = await setup({ owner, repo, title });
   console.log(JSON.stringify({ tracker }, null, 2));
+  console.log(`\nFor Flywheel: create one issue labeled "mission", assign it to ${tracker.assignee}, and add it to the project board. Its body is the mission statement.`);
 }
 
 if (require.main === module) {
