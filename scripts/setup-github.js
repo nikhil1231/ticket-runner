@@ -77,6 +77,11 @@ async function ensureProject(title) {
   return (await viewerProjects()).find((project) => project.title === title) || createProject(title);
 }
 
+// Linking the project to the repo is cosmetic — it only makes the board show up
+// under the repo's Projects tab. The runner adds issues via addProjectV2ItemById
+// and never needs the link. It also can't be done when the token's account (e.g.
+// a dedicated ticket-runner-bot) differs from the repo owner, since GitHub only
+// links same-owner projects. So this is best-effort: warn and carry on.
 async function linkRepo(projectId, repositoryId) {
   try {
     await github.graphql(`
@@ -86,7 +91,8 @@ async function linkRepo(projectId, repositoryId) {
         }
       }`, { projectId, repositoryId });
   } catch (error) {
-    if (!/already/i.test(error.message)) throw error;
+    if (/already/i.test(error.message)) return;
+    console.warn(`note: could not link the project to the repo (cosmetic only): ${error.message}`);
   }
 }
 
