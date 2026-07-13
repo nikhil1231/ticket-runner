@@ -13,14 +13,30 @@ test('prompt goes over stdin, not argv', () => {
   assert.ok(!spec.args.includes('do the thing'));
 });
 
-test('lastMessageFile points at the captured stdout for this invocation', () => {
+test('uses JSON output and a parseResult hook that recovers the message and usage', () => {
   const spec = build({ runDir, promptText: '', config: {}, model: '' });
-  assert.equal(spec.lastMessageFile, path.join(runDir, 'stdout.log'));
+  assert.deepEqual(spec.args.slice(0, 3), ['-p', '--output-format', 'json']);
+  assert.equal(typeof spec.parseResult, 'function');
+  const stdout = JSON.stringify({
+    result: 'TICKETS: here',
+    total_cost_usd: 0.012,
+    usage: { input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 60 },
+  });
+  const parsed = spec.parseResult({ stdout });
+  assert.equal(parsed.lastMessage, 'TICKETS: here');
+  assert.equal(parsed.usage.tokens, 200);
+  assert.equal(parsed.usage.costUsd, 0.012);
+});
+
+test('parseResult tolerates malformed/truncated JSON by returning nothing usable', () => {
+  const spec = build({ runDir, promptText: '', config: {}, model: '' });
+  const parsed = spec.parseResult({ stdout: '{ truncated' });
+  assert.deepEqual(parsed, {});
 });
 
 test('defaults to bypassPermissions and omits --model when none given', () => {
   const spec = build({ runDir, promptText: '', config: {}, model: '' });
-  assert.deepEqual(spec.args, ['-p', '--output-format', 'text', '--permission-mode', 'bypassPermissions']);
+  assert.deepEqual(spec.args, ['-p', '--output-format', 'json', '--permission-mode', 'bypassPermissions']);
 });
 
 test('ticket/candidate model overrides config.model', () => {
