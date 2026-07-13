@@ -92,6 +92,15 @@ test('extractItems recognizes NEEDS_INFO', () => {
   assert.match(parsed.message, /NEEDS_INFO:/);
 });
 
+test('extractItems recognizes EPIC_COMPLETE only when allowComplete is set', () => {
+  const msg = 'EPIC_COMPLETE: scope already delivered by existing code';
+  const withFlag = extractItems(msg, { key: 'tickets', max: 5, allowComplete: true });
+  assert.equal(withFlag.status, 'complete');
+  assert.match(withFlag.message, /EPIC_COMPLETE:/);
+  // Without the flag it is not a special signal - and with no TICKETS block it's invalid.
+  assert.equal(extractItems(msg, { key: 'tickets', max: 5 }).status, 'invalid');
+});
+
 test('extractItems rejects missing marker, bad JSON, oversized batches, short bodies, and forward dependsOn', () => {
   assert.equal(extractItems('just some text', { key: 'tickets', max: 5 }).status, 'invalid');
   assert.equal(extractItems('TICKETS:\n```json\n{not json}\n```', { key: 'tickets', max: 5 }).status, 'invalid');
@@ -338,4 +347,71 @@ test('mission edits re-trigger the epic phase even when non-cancelled epics alre
   const result2 = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
   assert.equal(spawnEngine2.calls.length, 0);
   assert.equal(result2.status, 'awaiting_epic_approval');
+});
+
+// ---- continuous mode + epic completion signal ----
+
+test('continuous mode auto-regenerates epics once every epic has settled', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const oldEpic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Shipped epic', parentId: mission.id, status: 'done', tracker: 'github:acme/caligo' });
+  assert.ok(oldEpic);
+  markMissionHashCurrent(store, mission); // mission itself unchanged - regeneration must come from the settled state
+
+  const spawnEngine = scriptedSpawnEngine([
+    { lastMessage: ticketsMessage('epics', [{ title: 'Next improvement', summary: 'S'.repeat(60) }]) },
+  ]);
+  const board2 = board({ flywheel: { enabled: true, continuous: true, backlogThreshold: 2, maxOpenTickets: 10, maxEpics: 7, maxTicketsPerPass: 3, cooldownMs: 900000 } });
+  const result = await runFlywheelPass({ config: { baseDir }, board: board2, store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.created, 1);
+  assert.equal(spawnEngine.calls.length, 1);
+  const openEpics = store.ticketsByKind('caligo', 'epic').filter((e) => e.status === 'in_review');
+  assert.equal(openEpics.length, 1);
+  assert.equal(openEpics[0].title, 'Next improvement');
+});
+
+test('one-shot (non-continuous) mode idles instead of regenerating when all epics settle', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Shipped epic', parentId: mission.id, status: 'done', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+
+  const spawnEngine = scriptedSpawnEngine([]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'mission_idle');
+  assert.equal(spawnEngine.calls.length, 0);
+  // reconcileEpics should have posted the one-shot idle nudge on the mission.
+  const missionComments = store.pendingOutbox(mission.id).filter((op) => op.op === 'comment');
+  assert.ok(missionComments.some((op) => /Update the mission body/.test(op.payload.text)));
+});
+
+test('EPIC_COMPLETE with no open children closes the epic and rotates', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Covered epic', parentId: mission.id, status: 'queued', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+  store.setKv('flywheel:cooldown:caligo', new Date(0).toISOString()); // already elapsed; progress should clear it
+
+  const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: existing code already delivers this scope' }]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'epic_complete');
+  assert.equal(store.getById(epic.id).status, 'done');
+  assert.equal(store.getKv('flywheel:cooldown:caligo', null), null); // progress clears the cooldown so the next epic starts promptly
+  const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
+  assert.ok(epicComments.some((op) => /marked this epic complete/.test(op.payload.text)));
+});
+
+test('EPIC_COMPLETE with an open child keeps the epic open and waits for it to drain', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Draining epic', parentId: mission.id, status: 'queued', tracker: 'github:acme/caligo' });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Last ticket still building', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+
+  const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: nothing more to add' }]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'epic_draining');
+  assert.equal(store.getById(epic.id).status, 'queued'); // stays open until the child finishes
+  assert.ok(store.getKv('flywheel:cooldown:caligo', null)); // draining sets a cooldown
 });

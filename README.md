@@ -107,7 +107,23 @@ approving epics.
    from that epic whenever it drops below `backlogThreshold`, generating
    grounded, decision-complete feature tickets that flow through the normal
    implementation loop. An epic auto-completes to **Done** once all of its
-   tickets are done or cancelled (with at least one done).
+   tickets are done or cancelled (with at least one done), or earlier if the
+   planner reports the epic's scope is already fully delivered.
+
+### One-shot vs. continuous missions
+
+By default a mission is **one-shot**: once every epic under it is done or
+rejected, Flywheel idles and posts a nudge to edit the mission (or add an epic
+by hand) to continue.
+
+Set `flywheel.continuous: true` for an open-ended "keep improving this app"
+mission that is never "done". In continuous mode, when every epic has settled
+the runner automatically opens a fresh epic-proposal round, re-reading the
+now-changed codebase to rank the next highest-leverage improvements. The
+flywheel keeps spinning; your only steering inputs are approving/rejecting
+epics (their board order is their priority), editing the mission, and the
+per-ticket Done gate. For a continuous mission, a small `maxEpics` (2-3) keeps
+each round a focused, re-ranked slate rather than a big up-front plan.
 
 Flywheel is a per-project maintenance pass in the tick loop, not a claimed
 ticket - a failing planner never blocks or crashes the loop, and never
@@ -122,6 +138,7 @@ Config (`config.json`, per project):
     "key": "caligo",
     "flywheel": {
       "enabled": true,
+      "continuous": false,
       "backlogThreshold": 2,
       "maxOpenTickets": 10,
       "maxEpics": 7,
@@ -135,10 +152,13 @@ Config (`config.json`, per project):
 }
 ```
 
+- `continuous` - `false` (one-shot: idle when all epics finish) or `true`
+  (indefinite: auto-open a new epic round when all epics settle).
 - `backlogThreshold` - top up when queued feature tickets under the active
   epic drop below this.
 - `maxOpenTickets` - hard cap on non-terminal feature tickets per project.
-- `maxEpics` - cap on epics proposed per mission.
+- `maxEpics` - cap on epics proposed per round (use 2-3 for continuous
+  missions).
 - `maxTicketsPerPass` - cap on tickets generated per planning pass.
 - `cooldownMs` - base wait after a needs-info, all-duplicate, or failed pass;
   failures back off exponentially from here.
