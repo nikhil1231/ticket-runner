@@ -101,15 +101,20 @@ test('extractItems recognizes EPIC_COMPLETE only when allowComplete is set', () 
   assert.equal(extractItems(msg, { key: 'tickets', max: 5 }).status, 'invalid');
 });
 
-test('extractItems rejects missing marker, bad JSON, oversized batches, short bodies, and forward dependsOn', () => {
+test('extractItems rejects missing marker, bad JSON, short bodies, and forward dependsOn', () => {
   assert.equal(extractItems('just some text', { key: 'tickets', max: 5 }).status, 'invalid');
   assert.equal(extractItems('TICKETS:\n```json\n{not json}\n```', { key: 'tickets', max: 5 }).status, 'invalid');
-  const tooMany = ticketsMessage('tickets', Array.from({ length: 3 }, (_, i) => ({ title: `T${i}`, body: 'x'.repeat(60) })));
-  assert.equal(extractItems(tooMany, { key: 'tickets', max: 2 }).status, 'invalid');
   const shortBody = ticketsMessage('tickets', [{ title: 'T', body: 'too short' }]);
   assert.equal(extractItems(shortBody, { key: 'tickets', max: 5 }).status, 'invalid');
   const forwardRef = ticketsMessage('tickets', [{ title: 'T0', body: 'x'.repeat(60), dependsOn: [1] }, { title: 'T1', body: 'y'.repeat(60) }]);
   assert.equal(extractItems(forwardRef, { key: 'tickets', max: 5 }).status, 'invalid');
+});
+
+test('extractItems accepts over-budget batches (caller truncates to the budget)', () => {
+  const tooMany = ticketsMessage('tickets', Array.from({ length: 6 }, (_, i) => ({ title: `T${i}`, body: 'x'.repeat(60) })));
+  const parsed = extractItems(tooMany, { key: 'tickets', max: 3 });
+  assert.equal(parsed.status, 'success');
+  assert.equal(parsed.items.length, 6);
 });
 
 test('dedupeAgainst drops case/whitespace-insensitive duplicates and preserves original indexes', () => {
