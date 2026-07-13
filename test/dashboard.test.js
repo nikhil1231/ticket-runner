@@ -75,6 +75,28 @@ test('dashboard ticket details include local state around the ticket', (t) => {
   assert.equal(details.events.some((event) => event.type === 'transition'), true);
 });
 
+test('dashboard /api/data includes a token-usage rollup parsed from runs/', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  seed(store, { trackerId: 'issue-3', shortId: 'tokrun000001', title: 'Token run' });
+  closeDb(db);
+
+  const invDir = path.join(baseDir, 'runs', 'tokrun000001-1783000000000', 'feature-0-codex');
+  fs.mkdirSync(invDir, { recursive: true });
+  fs.writeFileSync(path.join(invDir, 'stderr.log'), 'diff...\ntokens used\n2,500\n');
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const data = await requestJson(port, '/api/data');
+  assert.equal(data.status, 200);
+  assert.equal(data.body.tokens.available, true);
+  assert.equal(data.body.tokens.byProvider.codex.tokens, 2500);
+  assert.equal(data.body.tokens.byPhase.implementation.tokens, 2500);
+  const codexProvider = data.body.providers.find((p) => p.name === 'codex');
+  if (codexProvider) assert.equal(codexProvider.tokens, 2500);
+});
+
 test('dashboard exposes ticket details and restart action endpoints', async (t) => {
   const { baseDir, db, store } = fixture(t);
   seed(store, { trackerId: 'issue-2', shortId: 'ticket000002', title: 'Clickable ticket' });
