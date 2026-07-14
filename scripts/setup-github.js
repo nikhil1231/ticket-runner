@@ -123,42 +123,42 @@ async function createTextField(projectId, name) {
   return data.createProjectV2Field.projectV2Field;
 }
 
-async function createSingleSelectField(projectId, name, options) {
+// Replace a single-select field's options wholesale. Passing options without
+// ids replaces the whole set (drops GitHub's default Todo/In Progress/Done).
+async function setStatusOptions(fieldId) {
   const data = await github.graphql(`
-    mutation CreateSingleSelectField($projectId: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
-      createProjectV2Field(input: { projectId: $projectId, name: $name, dataType: SINGLE_SELECT, singleSelectOptions: $options }) {
+    mutation SetStatusOptions($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+      updateProjectV2Field(input: { fieldId: $fieldId, singleSelectOptions: $options }) {
         projectV2Field {
-          ... on ProjectV2SingleSelectField { id name dataType options { id name } }
+          ... on ProjectV2SingleSelectField { id name options { id name } }
         }
       }
     }`, {
-    projectId,
-    name,
-    options: options.map((option, index) => ({
+    fieldId,
+    options: STATUS_OPTIONS.map((option, index) => ({
       name: option,
       color: STATUS_COLORS[index % STATUS_COLORS.length],
       description: '',
     })),
   });
-  return data.createProjectV2Field.projectV2Field;
+  return data.updateProjectV2Field.projectV2Field;
 }
 
-function statusField(fields) {
-  const candidates = fields.filter((field) => field.name === 'AI Status' || field.name === 'Status');
-  return candidates.find((field) => {
-    const names = new Set((field.options || []).map((option) => option.name));
-    return STATUS_OPTIONS.every((name) => names.has(name));
-  });
+// The runner reads the project field literally named "Status"
+// (lib/trackers/github.js projectItemsByIssue), so the canonical statuses must
+// live on that built-in field — not a separate "AI Status" field, which the
+// runner writes to but never reads (they diverge, and runner-set statuses like an
+// epic's In review become invisible to polling). Configure the built-in field.
+function statusSelectField(fields) {
+  return fields.find((field) => field.name === 'Status' && Array.isArray(field.options));
 }
 
 async function ensureStatusField(projectId, fields) {
-  const status = statusField(fields);
-  if (status) return status;
-  const existingAiStatus = fields.find((field) => field.name === 'AI Status');
-  if (!existingAiStatus) return createSingleSelectField(projectId, 'AI Status', STATUS_OPTIONS);
-  const names = new Set((existingAiStatus.options || []).map((option) => option.name));
-  const missing = STATUS_OPTIONS.filter((name) => !names.has(name));
-  throw new Error(`AI Status is missing options: ${missing.join(', ')}`);
+  const status = statusSelectField(fields);
+  if (!status) throw new Error('Project has no built-in "Status" single-select field to configure');
+  const names = new Set((status.options || []).map((option) => option.name));
+  if (STATUS_OPTIONS.every((name) => names.has(name))) return status;
+  return setStatusOptions(status.id);
 }
 
 async function setup({ owner, repo, title, assignee = 'ticket-runner-bot' }) {

@@ -8,7 +8,7 @@ const path = require('path');
 const { openDb, closeDb } = require('../lib/db');
 const { createStore } = require('../lib/store');
 const {
-  flywheelSettings, missionHash, dedupeAgainst, extractItems, reconcileEpics, runFlywheelPass,
+  flywheelSettings, plannerPolicy, missionHash, dedupeAgainst, extractItems, reconcileEpics, runFlywheelPass,
 } = require('../lib/flywheel');
 
 function fixture(t) {
@@ -144,6 +144,18 @@ test('missionHash changes with title or body and is stable otherwise', () => {
   assert.notEqual(a, c);
 });
 
+test('plannerPolicy resolves phase-specific chains, falling back to planner then a default', () => {
+  const cfg = { fallbackPolicies: {
+    epicPlanner: [{ provider: 'claude', model: 'claude-opus-4-8' }],
+    ticketPlanner: [{ provider: 'codex', model: '' }],
+    planner: [{ provider: 'antigravity' }],
+  } };
+  assert.deepEqual(plannerPolicy(cfg, 'epicPlanner'), [{ provider: 'claude', model: 'claude-opus-4-8' }]);
+  assert.deepEqual(plannerPolicy(cfg, 'ticketPlanner'), [{ provider: 'codex', model: '' }]);
+  assert.deepEqual(plannerPolicy({ fallbackPolicies: { planner: [{ provider: 'codex' }] } }, 'epicPlanner'), [{ provider: 'codex' }]);
+  assert.deepEqual(plannerPolicy({}, 'ticketPlanner'), [{ provider: 'claude' }, { provider: 'codex' }]);
+});
+
 // ---- reconcileEpics ----
 
 test('reconcileEpics auto-completes an epic once all children are done/cancelled and reports to the mission', (t) => {
@@ -216,6 +228,28 @@ test('epic phase proposes epics under the mission when none exist yet', async (t
   assert.match(epics[0].body, /Onboarding flow|Parent/);
   assert.equal(wt.calls.create.length, 1);
   assert.equal(wt.calls.remove.length, 1);
+});
+
+test('epic phase and ticket phase use their own planner policies', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const cfg = { baseDir, fallbackPolicies: {
+    epicPlanner: [{ provider: 'claude', model: 'claude-opus-4-8' }],
+    ticketPlanner: [{ provider: 'codex', model: '' }],
+  } };
+
+  // Epic phase (no epics yet) should spawn the epicPlanner engine.
+  const epicSpawn = scriptedSpawnEngine([{ lastMessage: ticketsMessage('epics', [{ title: 'E', summary: 'S'.repeat(60) }]) }]);
+  await runFlywheelPass({ config: cfg, board: board(), store, services: { spawnEngine: epicSpawn, worktrees: fakeWorktrees() } });
+  assert.equal(epicSpawn.calls[0].cli, 'claude');
+  assert.equal(epicSpawn.calls[0].model, 'claude-opus-4-8');
+
+  // Approve the epic, then the ticket phase should spawn the ticketPlanner engine.
+  const epic = store.ticketsByKind('caligo', 'epic')[0];
+  store.transition(epic.id, 'queued');
+  const ticketSpawn = scriptedSpawnEngine([{ lastMessage: ticketsMessage('tickets', [{ title: 'T', body: 'x'.repeat(60) }]) }]);
+  await runFlywheelPass({ config: cfg, board: board(), store, services: { spawnEngine: ticketSpawn, worktrees: fakeWorktrees() } });
+  assert.equal(ticketSpawn.calls[0].cli, 'codex');
 });
 
 test('epic phase does not re-trigger while a proposal is awaiting review', async (t) => {
