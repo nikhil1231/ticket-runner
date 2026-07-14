@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { RefreshCw, X } from 'lucide-react';
+import { LayoutDashboard, RefreshCw, ScrollText, X } from 'lucide-react';
 import './styles.css';
 
 const STATUS_COLOR = {
@@ -314,6 +314,93 @@ function Connections({ connections = [] }) {
   );
 }
 
+function MiniTicketList({ items = [], onOpen, empty }) {
+  if (!items.length) return <div className="muted tiny-gap">{empty}</div>;
+  return (
+    <div className="state-list">
+      {items.map((item) => (
+        <div className="state-row" key={item.shortId}>
+          <div className="state-main">
+            <TicketLink item={item} onOpen={onOpen} />
+            <div className="state-meta">
+              <span className="mono">{item.project}</span>
+              <StatusTag status={item.status} />
+              {item.agent ? <span className="mono">{item.agent}</span> : null}
+            </div>
+          </div>
+          <span className="muted nowrap">{ago(item.at)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CurrentState({ data, onOpen }) {
+  const store = data.store || {};
+  const current = store.current || {};
+  const byStatus = store.byStatus || {};
+  const stackSummary = current.stackSummary || {};
+  const syncColor = store.totals?.outboxParked ? 'var(--warning)' : store.totals?.outboxPending ? 'var(--c3)' : 'var(--good)';
+
+  return (
+    <>
+      <h2>Current state</h2>
+      <div className="state-grid">
+        <section className="card state-card wide">
+          <h3><span>In flight</span><span className="tag">{current.inFlight?.length || 0} moving</span></h3>
+          <MiniTicketList items={current.inFlight} onOpen={onOpen} empty="No tickets are currently running or testing." />
+        </section>
+        <section className="card state-card">
+          <h3><span>Up next</span><span className="tag">{byStatus.queued || 0} queued</span></h3>
+          <MiniTicketList items={current.queued?.slice(0, 5)} onOpen={onOpen} empty="Queue is empty." />
+        </section>
+        <section className="card state-card">
+          <h3><span>Just finished</span><span className="tag">{byStatus.done || 0} done</span></h3>
+          <MiniTicketList items={current.recentlyCompleted?.slice(0, 5)} onOpen={onOpen} empty="Nothing completed yet." />
+        </section>
+        <section className="card state-card">
+          <h3><span>Project flow</span></h3>
+          {!current.projectFlow?.length ? <div className="muted tiny-gap">No active project pressure.</div> : (
+            <div className="flow-list">
+              {current.projectFlow.map((project) => (
+                <div className="flow-row" key={project.project}>
+                  <span className="mono">{project.project}</span>
+                  <span className="chip">{project.moving} moving</span>
+                  <span className="chip">{project.queued} queued</span>
+                  {project.blocked ? <span className="chip warn">{project.blocked} blocked</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+        <section className="card state-card">
+          <h3><span>Signals</span></h3>
+          <div className="signal-grid">
+            <div>
+              <div className="val small-val" style={{ color: (byStatus.failed || byStatus.needs_info) ? 'var(--critical)' : 'var(--good)' }}>
+                {(byStatus.failed || 0) + (byStatus.needs_info || 0)}
+              </div>
+              <div className="lab">blocked or needs info</div>
+            </div>
+            <div>
+              <div className="val small-val" style={{ color: syncColor }}>{store.totals?.outboxPending || 0}</div>
+              <div className="lab">sync ops pending</div>
+            </div>
+            <div>
+              <div className="val small-val" style={{ color: stackSummary.blocked ? 'var(--critical)' : 'var(--good)' }}>{stackSummary.deployed || 0}</div>
+              <div className="lab">stacks deployed</div>
+            </div>
+            <div>
+              <div className="val small-val">{current.reviewing?.length || 0}</div>
+              <div className="lab">in review</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
 function NeedsAttention({ items = [], onOpen }) {
   return (
     <>
@@ -530,12 +617,86 @@ function TicketModal({ ticketId, onClose, onOpen }) {
   );
 }
 
+function LogsPage({ services = [] }) {
+  const [serviceId, setServiceId] = useState(services[0]?.id || 'ticket-runner');
+  const [lineCount, setLineCount] = useState(200);
+  const [live, setLive] = useState(true);
+  const [state, setState] = useState({ loading: true, data: null, error: '' });
+
+  useEffect(() => {
+    if (!services.some((service) => service.id === serviceId) && services[0]?.id) {
+      setServiceId(services[0].id);
+    }
+  }, [serviceId, services]);
+
+  const loadLogs = useCallback(async () => {
+    setState((current) => ({ ...current, loading: true }));
+    try {
+      const response = await fetch(`/api/logs/${encodeURIComponent(serviceId)}?lines=${lineCount}`, { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'log load failed');
+      setState({ loading: false, data: body, error: '' });
+    } catch (logError) {
+      setState((current) => ({ loading: false, data: current.data, error: logError.message }));
+    }
+  }, [lineCount, serviceId]);
+
+  useEffect(() => {
+    loadLogs();
+    if (!live) return undefined;
+    const timer = setInterval(loadLogs, 4000);
+    return () => clearInterval(timer);
+  }, [live, loadLogs]);
+
+  const text = state.data?.lines?.join('\n') || '';
+
+  return (
+    <>
+      <h2>Live logs</h2>
+      <div className="log-toolbar">
+        <div className="segmented" role="tablist" aria-label="Service logs">
+          {services.map((service) => (
+            <button
+              className={`seg-btn${service.id === serviceId ? ' active' : ''}`}
+              key={service.id}
+              type="button"
+              onClick={() => setServiceId(service.id)}
+            >
+              <ScrollText size={14} /> {service.label}
+            </button>
+          ))}
+        </div>
+        <select className="select" value={lineCount} onChange={(event) => setLineCount(Number(event.target.value))} aria-label="Log line count">
+          <option value={100}>Tail 100</option>
+          <option value={200}>Tail 200</option>
+          <option value={500}>Tail 500</option>
+          <option value={1000}>Tail 1000</option>
+        </select>
+        <label className="check">
+          <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
+          Live
+        </label>
+        <button className="btn" type="button" onClick={loadLogs} disabled={state.loading}>
+          <RefreshCw size={14} /> Refresh
+        </button>
+      </div>
+      <div className="log-head">
+        <span className="mono">{state.data?.service?.unit || serviceId}</span>
+        <span className="sub">{state.loading ? 'Loading...' : state.data?.generatedAt ? `Updated ${ago(state.data.generatedAt)}` : ''}</span>
+      </div>
+      {state.error ? <div className="note err">{state.error}</div> : null}
+      {text ? <pre className="logs">{text}</pre> : <Empty>{state.loading ? 'Loading logs...' : 'No log lines returned.'}</Empty>}
+    </>
+  );
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [ticketId, setTicketId] = useState('');
   const [actionStatus, setActionStatus] = useState('');
   const [restarting, setRestarting] = useState(false);
+  const [view, setView] = useState(() => (window.location.hash === '#logs' ? 'logs' : 'dashboard'));
 
   const load = useCallback(async () => {
     try {
@@ -561,6 +722,12 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const onHashChange = () => setView(window.location.hash === '#logs' ? 'logs' : 'dashboard');
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const restartRunner = useCallback(async () => {
@@ -596,6 +763,10 @@ function App() {
   const store = data.store || {};
   const runnerDot = runner.state === 'live' ? 'var(--good)' : runner.state === 'stale' ? 'var(--warning)' : 'var(--muted)';
   const runnerText = runner.state === 'live' ? 'Runner live' : runner.state === 'stale' ? 'Runner stale' : 'Runner status unknown';
+  const setPage = (nextView) => {
+    setView(nextView);
+    window.location.hash = nextView === 'logs' ? 'logs' : '';
+  };
 
   return (
     <>
@@ -604,6 +775,14 @@ function App() {
           <h1>{data.app} <span className="muted light">dashboard</span></h1>
           <span className="pill"><Dot color={runnerDot} />{runnerText}{runner.heartbeat ? ` - ${ago(runner.heartbeat.at)}` : ''}</span>
           {data.pollIntervalMs ? <span className="sub">poll {Math.round(data.pollIntervalMs / 1000)}s - max {data.maxAttempts} attempts</span> : null}
+          <nav className="view-nav" aria-label="Dashboard views">
+            <button className={`btn nav-btn${view === 'dashboard' ? ' active' : ''}`} type="button" onClick={() => setPage('dashboard')}>
+              <LayoutDashboard size={14} /> Dashboard
+            </button>
+            <button className={`btn nav-btn${view === 'logs' ? ' active' : ''}`} type="button" onClick={() => setPage('logs')}>
+              <ScrollText size={14} /> Logs
+            </button>
+          </nav>
           <div className="actions">
             <span className="sub">{actionStatus}</span>
             <button className="btn danger restart-btn" type="button" onClick={restartRunner} disabled={restarting}>
@@ -613,32 +792,40 @@ function App() {
         </header>
         <div className="sub">Updated {ago(data.generatedAt)} - auto-refreshes every 15s</div>
 
-        {error ? <div className="note err">Last refresh failed: {error}</div> : null}
-        {!store.available ? <Empty error>Ticket store unavailable: {store.error}</Empty> : null}
+        {view === 'logs' ? (
+          <LogsPage services={data.services} />
+        ) : (
+          <>
+            {error ? <div className="note err">Last refresh failed: {error}</div> : null}
+            {!store.available ? <Empty error>Ticket store unavailable: {store.error}</Empty> : null}
 
-        <h2>Overview</h2>
-        <div className="grid tiles">
-          <Tile value={store.totals?.tickets || 0} label="Tickets total" />
-          <Tile value={overview.active} label="Active in pipeline" />
-          <Tile value={overview.byStatus.done || 0} label="Completed" />
-          <Tile value={overview.byStatus.failed || 0} label="Failed" color={overview.byStatus.failed ? 'var(--critical)' : ''} />
-          <Tile value={(overview.byStatus.needs_info || 0) + (overview.byStatus.in_review || 0)} label="Awaiting human" />
-          <Tile value={store.totals?.outboxParked || 0} label="Parked sync ops" color={store.totals?.outboxParked ? 'var(--warning)' : ''} />
-        </div>
+            <h2>Overview</h2>
+            <div className="grid tiles">
+              <Tile value={store.totals?.tickets || 0} label="Tickets total" />
+              <Tile value={overview.active} label="Active in pipeline" />
+              <Tile value={overview.byStatus.done || 0} label="Completed" />
+              <Tile value={overview.byStatus.failed || 0} label="Failed" color={overview.byStatus.failed ? 'var(--critical)' : ''} />
+              <Tile value={(overview.byStatus.needs_info || 0) + (overview.byStatus.in_review || 0)} label="Awaiting human" />
+              <Tile value={store.totals?.outboxParked || 0} label="Parked sync ops" color={store.totals?.outboxParked ? 'var(--warning)' : ''} />
+            </div>
 
-        <h2>Agent providers &amp; quota</h2>
-        <ProviderCards providers={data.providers} />
-        <div className="note">
-          These coding CLIs do not expose a remaining-quota number. The runner detects rate limits reactively and fails over down the chain. Runs attributes each ticket to the provider that last worked it (from <span className="mono">last_agent</span>); token counts are reconstructed from per-invocation logs.
-        </div>
+            <CurrentState data={data} onOpen={setTicketId} />
+            <Projects data={data} onOpen={setTicketId} />
 
-        <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
-        <Connections connections={data.connections} />
-        <Projects data={data} onOpen={setTicketId} />
-        <NeedsAttention items={store.attention} onOpen={setTicketId} />
-        <Completed items={store.completed} onOpen={setTicketId} />
-        <Activity items={store.activity} onOpen={setTicketId} />
-        <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
+            <h2>Agent providers &amp; quota</h2>
+            <ProviderCards providers={data.providers} />
+            <div className="note">
+              These coding CLIs do not expose a remaining-quota number. The runner detects rate limits reactively and fails over down the chain. Runs attributes each ticket to the provider that last worked it (from <span className="mono">last_agent</span>); token counts are reconstructed from per-invocation logs.
+            </div>
+
+            <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
+            <Connections connections={data.connections} />
+            <NeedsAttention items={store.attention} onOpen={setTicketId} />
+            <Completed items={store.completed} onOpen={setTicketId} />
+            <Activity items={store.activity} onOpen={setTicketId} />
+            <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
+          </>
+        )}
       </div>
       {ticketId ? <TicketModal ticketId={ticketId} onClose={() => setTicketId('')} onOpen={setTicketId} /> : null}
     </>

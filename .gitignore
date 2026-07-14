@@ -8,4 +8,5 @@ public/dashboard/
 
 # machine-specific runtime config (untracked per host)
 config.json
+config.json.bak*
 AGENTS.local.md

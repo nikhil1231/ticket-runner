@@ -90,7 +90,8 @@ test('dashboard ticket details include local state around the ticket', (t) => {
 
 test('dashboard /api/data includes a token-usage rollup parsed from runs/', async (t) => {
   const { baseDir, db, store } = fixture(t);
-  seed(store, { trackerId: 'issue-3', shortId: 'tokrun000001', title: 'Token run' });
+  const ticket = seed(store, { trackerId: 'issue-3', shortId: 'tokrun000001', title: 'Token run' });
+  store.transition(ticket.id, 'in_progress', { lastAgent: 'codex/gpt-5' });
   closeDb(db);
 
   const invDir = path.join(baseDir, 'runs', 'tokrun000001-1783000000000', 'feature-0-codex');
@@ -106,6 +107,8 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   assert.equal(data.body.tokens.available, true);
   assert.equal(data.body.tokens.byProvider.codex.tokens, 2500);
   assert.equal(data.body.tokens.byPhase.implementation.tokens, 2500);
+  assert.equal(data.body.store.current.inFlight[0].shortId, 'tokrun000001');
+  assert.equal(data.body.store.current.projectFlow[0].moving, 1);
   const codexProvider = data.body.providers.find((p) => p.name === 'codex');
   if (codexProvider) assert.equal(codexProvider.tokens, 2500);
 });
@@ -123,6 +126,11 @@ test('dashboard exposes ticket details and restart action endpoints', async (t) 
       restarted = true;
       return { ok: true, command: 'fake restart' };
     },
+    logReader: (serviceId, options) => ({
+      service: { id: serviceId, label: 'Ticket runner', unit: 'ticket-runner.service' },
+      generatedAt: '2026-07-14T10:00:00.000Z',
+      lines: [`${serviceId} tail ${options.lines}`],
+    }),
   });
   t.after(() => server.close());
   const port = server.address().port;
@@ -135,6 +143,10 @@ test('dashboard exposes ticket details and restart action endpoints', async (t) 
   assert.equal(restart.status, 202);
   assert.equal(restart.body.ok, true);
   assert.equal(restarted, true);
+
+  const logs = await requestJson(port, '/api/logs/ticket-runner?lines=100');
+  assert.equal(logs.status, 200);
+  assert.deepEqual(logs.body.lines, ['ticket-runner tail 100']);
 });
 
 test('dashboard shows a clear failure page when React build is missing', async (t) => {
