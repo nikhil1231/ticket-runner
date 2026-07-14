@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { checkForUpdate } = require('../lib/update');
+const { buildDashboard, checkForUpdate } = require('../lib/update');
 
 function fakeGit({ head = 'aaa', target = 'bbb', dirty = '', diverged = false } = {}) {
   const calls = [];
@@ -45,4 +45,44 @@ test('fast-forwards a clean checkout', () => {
     updated: true, reason: 'fast-forward', headSha: 'bbb',
   });
   assert.equal(fake.calls.includes('merge --ff-only --quiet origin/main'), true);
+});
+
+test('runs dashboard build after a fast-forward when requested', () => {
+  const fake = fakeGit();
+  const builds = [];
+  assert.deepEqual(checkForUpdate({
+    repoPath: '/repo',
+    git: fake.git,
+    build: (repoPath) => {
+      builds.push(repoPath);
+      return { ok: true };
+    },
+  }), {
+    updated: true, reason: 'fast-forward', headSha: 'bbb', build: { ok: true },
+  });
+  assert.deepEqual(builds, ['/repo']);
+});
+
+test('reports dashboard build failures without undoing the update', () => {
+  const fake = fakeGit();
+  const result = checkForUpdate({
+    repoPath: '/repo',
+    git: fake.git,
+    build: () => ({ ok: false, error: 'vite exploded' }),
+  });
+  assert.equal(result.updated, true);
+  assert.equal(result.build.ok, false);
+  assert.equal(result.build.error, 'vite exploded');
+});
+
+test('dashboard build bootstraps npm dependencies before building', () => {
+  const calls = [];
+  const result = buildDashboard('/repo', (_cmd, args, options) => {
+    calls.push({ args, cwd: options.cwd });
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [
+    { args: ['install', '--silent'], cwd: '/repo' },
+    { args: ['run', 'dashboard:build', '--silent'], cwd: '/repo' },
+  ]);
 });

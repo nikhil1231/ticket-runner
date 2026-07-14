@@ -489,8 +489,12 @@ function checkForSelfUpdate(config) {
       repoPath: baseDir,
       remote: config.autoUpdate.remote || 'origin',
       branch: config.autoUpdate.branch || 'main',
+      build: updater.buildDashboard,
     });
     if (result.updated) {
+      if (result.build && !result.build.ok) {
+        log(`dashboard build failed after update (non-fatal): ${result.build.error.trim()}`);
+      }
       log(`updated runner to ${result.headSha.slice(0, 7)}; restarting service`);
       if (process.platform !== 'win32') {
         try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' }); } catch {}

@@ -53,6 +53,19 @@ function requestJson(port, pathName, { method = 'GET' } = {}) {
   });
 }
 
+function requestText(port, pathName) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path: pathName }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 test('dashboard ticket details include local state around the ticket', (t) => {
   const { baseDir, db, store } = fixture(t);
   const blocker = seed(store, { trackerId: 'issue-0', shortId: 'blocker000001', title: 'Blocking task' });
@@ -122,4 +135,18 @@ test('dashboard exposes ticket details and restart action endpoints', async (t) 
   assert.equal(restart.status, 202);
   assert.equal(restart.body.ok, true);
   assert.equal(restarted, true);
+});
+
+test('dashboard shows a clear failure page when React build is missing', async (t) => {
+  const { baseDir, db } = fixture(t);
+  closeDb(db);
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const page = await requestText(port, '/');
+  assert.equal(page.status, 503);
+  assert.match(page.body, /Dashboard build unavailable/);
+  assert.match(page.body, /npm run dashboard:build/);
 });

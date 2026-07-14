@@ -1,0 +1,648 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { RefreshCw, X } from 'lucide-react';
+import './styles.css';
+
+const STATUS_COLOR = {
+  queued: 'var(--muted)',
+  in_progress: 'var(--c1)',
+  needs_info: 'var(--warning)',
+  in_review: 'var(--c5)',
+  testing: 'var(--c3)',
+  done: 'var(--good)',
+  failed: 'var(--critical)',
+  cancelled: 'var(--muted)',
+};
+
+const STATUS_LABEL = {
+  queued: 'Queued',
+  in_progress: 'In progress',
+  needs_info: 'Needs info',
+  in_review: 'In review',
+  testing: 'Testing',
+  done: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+function ago(iso) {
+  if (!iso) return '-';
+  const delta = Date.now() - Date.parse(iso);
+  if (Number.isNaN(delta)) return '-';
+  const minutes = Math.round(delta / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function fmtInt(value) {
+  const n = Number(value) || 0;
+  if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+  return String(Math.round(n));
+}
+
+function fmtUsd(value) {
+  const n = Number(value) || 0;
+  if (!n) return '$0';
+  return `$${n >= 1 ? n.toFixed(2) : n.toFixed(n >= 0.1 ? 2 : 3)}`;
+}
+
+function Dot({ color }) {
+  return <span className="dot" style={{ background: color }} />;
+}
+
+function Tile({ value, label, color }) {
+  return (
+    <div className="tile">
+      <div className="val" style={color ? { color } : null}>{value}</div>
+      <div className="lab">{label}</div>
+    </div>
+  );
+}
+
+function StatusTag({ status }) {
+  if (!status) return <span className="muted">-</span>;
+  return (
+    <span className="tag">
+      <Dot color={STATUS_COLOR[status] || 'var(--muted)'} />
+      {STATUS_LABEL[status] || status}
+    </span>
+  );
+}
+
+function TicketLink({ item, onOpen }) {
+  const title = item?.title || '(untitled)';
+  if (!item?.shortId) return title;
+  return (
+    <>
+      <button className="linkbtn ticket-link" type="button" onClick={() => onOpen(item.shortId)}>{title}</button>{' '}
+      <span className="mono">{item.shortId}</span>
+    </>
+  );
+}
+
+function StatusBar({ counts = {}, statuses = [] }) {
+  const total = statuses.reduce((sum, status) => sum + (counts[status] || 0), 0);
+  if (!total) return <div className="muted inline-empty">No tickets yet</div>;
+  const active = statuses.filter((status) => counts[status]);
+  return (
+    <>
+      <div className="bar">
+        {active.map((status) => (
+          <span
+            key={status}
+            style={{ width: `${(100 * counts[status]) / total}%`, background: STATUS_COLOR[status] }}
+            title={`${STATUS_LABEL[status]}: ${counts[status]}`}
+          />
+        ))}
+      </div>
+      <div className="seg-legend">
+        {active.map((status) => (
+          <span key={status}>
+            <Dot color={STATUS_COLOR[status]} />
+            {STATUS_LABEL[status]} <b>{counts[status]}</b>
+          </span>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function Chips({ items }) {
+  if (!items?.length) return <span className="muted">-</span>;
+  return (
+    <div className="chips">
+      {items.map((item) => <span className="chip" key={item}>{item}</span>)}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  const empty = children === null || children === undefined || children === '';
+  return (
+    <div className="field">
+      <div className="lab">{label}</div>
+      <div className="value">{empty ? <span className="muted">-</span> : children}</div>
+    </div>
+  );
+}
+
+function Empty({ children, error = false }) {
+  return <div className={`empty${error ? ' err' : ''}`}>{children}</div>;
+}
+
+function ProviderCards({ providers = [] }) {
+  return (
+    <div className="grid cards">
+      {providers.map((provider) => {
+        const phases = Object.entries(provider.phases || {});
+        return (
+          <div className="card" key={provider.name}>
+            <h3>
+              {provider.name}
+              <span className="tag">
+                <Dot color={provider.installed ? 'var(--good)' : 'var(--critical)'} />
+                {provider.installed ? 'installed' : 'CLI missing'}
+              </span>
+            </h3>
+            <div className="k mono">{provider.cmd}</div>
+            <div className="provider-metrics">
+              <div>
+                <div className="val small-val">{provider.usageRecent}</div>
+                <div className="lab">runs - 24h</div>
+              </div>
+              <div>
+                <div className="val small-val">{provider.usageTotal}</div>
+                <div className="lab">runs - total</div>
+              </div>
+            </div>
+            {(provider.tokens || provider.costUsd) ? (
+              <div className="k spaced">{fmtInt(provider.tokens)} tokens{provider.costUsd ? ` - ${fmtUsd(provider.costUsd)} reported` : ''}</div>
+            ) : null}
+            <div className="k spaced">Models</div>
+            <Chips items={provider.models?.length ? provider.models : null} />
+            <div className="k spaced">Failover priority</div>
+            <div className="chips">
+              {phases.length ? phases.map(([phase, priority]) => (
+                <span className="chip" title={`priority ${priority} in ${phase} chain`} key={phase}>{phase} #{priority}</span>
+              )) : <span className="muted">not in any policy</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TokenUsage({ tokens, onOpen }) {
+  if (!tokens?.available || !tokens.totals?.runs) return null;
+  const phases = ['implementation', 'review', 'planning', 'query', 'other'];
+  const labels = { implementation: 'Implementation', review: 'Review', planning: 'Planning', query: 'Query', other: 'Other' };
+  const colors = { implementation: 'var(--c1)', review: 'var(--c5)', planning: 'var(--c3)', query: 'var(--c2)', other: 'var(--muted)' };
+  const total = phases.reduce((sum, phase) => sum + ((tokens.byPhase?.[phase] || {}).tokens || 0), 0);
+  const implementation = tokens.byPhase?.implementation?.tokens || 0;
+  const logistics = (tokens.byPhase?.review?.tokens || 0) + (tokens.byPhase?.planning?.tokens || 0);
+
+  return (
+    <>
+      <h2>Token usage</h2>
+      <div className="grid tiles">
+        <Tile value={fmtInt(tokens.totals.tokens)} label="Tokens total" />
+        <Tile value={fmtInt(tokens.recent.tokens)} label="Tokens - 24h" />
+        {tokens.costTracked ? <Tile value={fmtUsd(tokens.totals.costUsd)} label="Reported cost" /> : null}
+        <Tile value={tokens.totals.runs} label="Engine runs" />
+      </div>
+      {total ? (
+        <div className="tblwrap padded top-gap">
+          <div className="k">By phase - implementation is the work you would run by hand; review + planning is the Flywheel logistics overhead</div>
+          <div className="bar tall">
+            {phases.filter((phase) => tokens.byPhase?.[phase]?.tokens).map((phase) => (
+              <span
+                key={phase}
+                style={{ width: `${(100 * tokens.byPhase[phase].tokens) / total}%`, background: colors[phase] }}
+                title={`${labels[phase]}: ${fmtInt(tokens.byPhase[phase].tokens)}`}
+              />
+            ))}
+          </div>
+          <div className="seg-legend">
+            {phases.filter((phase) => tokens.byPhase?.[phase]?.tokens).map((phase) => (
+              <span key={phase}>
+                <Dot color={colors[phase]} />
+                {labels[phase]} <b>{fmtInt(tokens.byPhase[phase].tokens)}</b>{' '}
+                <span className="muted">({Math.round((100 * tokens.byPhase[phase].tokens) / total)}%)</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {implementation + logistics ? (
+        <div className="note">
+          Logistics (review + planning) is <b>{fmtInt(logistics)}</b> tokens - <b>{Math.round((100 * logistics) / (implementation + logistics))}%</b> of implementation + logistics.
+          {tokens.costTracked ? ' Reported cost is claude runs only (codex reports tokens but no price; antigravity reports neither).' : ''}
+        </div>
+      ) : null}
+      {tokens.perTicket?.length ? (
+        <div className="tblwrap top-gap">
+          <table>
+            <thead>
+              <tr><th>Costliest tickets</th><th>Tokens</th>{tokens.costTracked ? <th>Cost</th> : null}<th>Runs</th></tr>
+            </thead>
+            <tbody>
+              {tokens.perTicket.slice(0, 12).map((row) => (
+                <tr key={row.shortId}>
+                  <td><button className="linkbtn ticket-link mono" type="button" onClick={() => onOpen(row.shortId)}>{row.shortId}</button></td>
+                  <td className="num">{fmtInt(row.tokens)}</td>
+                  {tokens.costTracked ? <td className="num">{row.costUsd ? fmtUsd(row.costUsd) : '-'}</td> : null}
+                  <td className="num">{row.runs}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function Projects({ data, onOpen }) {
+  const store = data.store || {};
+  return (
+    <>
+      <h2>Projects</h2>
+      {data.registryOnly ? (
+        <div className="note">Projects are defined in a Notion project registry, which the dashboard cannot read offline. Add a local <span className="mono">projects</span> array to config.json to list them here.</div>
+      ) : null}
+      {!data.projects?.length && !data.registryOnly ? <Empty>No projects configured.</Empty> : null}
+      {data.projects?.length ? (
+        <div className="grid cards project-cards">
+          {data.projects.map((project) => {
+            const counts = store.projectStatus?.[project.key] || {};
+            const stack = (store.stacks || []).find((item) => item.project === project.key);
+            const recent = (store.completed || []).filter((item) => item.project === project.key).slice(0, 4);
+            return (
+              <div className="card" key={project.key}>
+                <h3>{project.key}<span className="tag">{project.trackerType}</span></h3>
+                <div className="k mono">{project.repoPath}</div>
+                <div className="rowline spaced">
+                  <span className="chip">publish: {project.publisherType}{project.easChannel ? ` (${project.easChannel})` : ''}</span>
+                  <span className="chip">{project.integrationMode}{project.integrationEnabled ? '' : ' - off'}</span>
+                  {stack ? (
+                    <span className="tag" title="testing stack">
+                      <Dot color={stack.status === 'deployed' ? 'var(--good)' : stack.status === 'blocked' ? 'var(--critical)' : 'var(--muted)'} />
+                      stack: {stack.status}
+                    </span>
+                  ) : null}
+                </div>
+                <StatusBar counts={counts} statuses={data.statuses} />
+                <div className="k spaced">Recent completed</div>
+                {recent.length ? (
+                  <div className="recent-list">
+                    {recent.map((item) => (
+                      <div className="rowline recent-row" key={item.shortId}>
+                        <span><TicketLink item={item} onOpen={onOpen} /></span>
+                        <span className="muted nowrap">{ago(item.at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="muted tiny-gap">Nothing completed yet</div>}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function Connections({ connections = [] }) {
+  return (
+    <div className="chips top-gap">
+      {connections.map((connection) => {
+        const color = connection.configured ? 'var(--good)' : connection.required ? 'var(--critical)' : 'var(--muted)';
+        const label = connection.configured ? 'connected' : connection.required ? 'token missing' : 'not used';
+        return (
+          <span className="tag" key={connection.id}>
+            <Dot color={color} />
+            {connection.label} - {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function NeedsAttention({ items = [], onOpen }) {
+  return (
+    <>
+      <h2>Needs attention</h2>
+      {!items.length ? <Empty>Nothing waiting - no failed, in-review, or needs-info tickets.</Empty> : (
+        <div className="tblwrap">
+          <table>
+            <thead><tr><th>Ticket</th><th>Project</th><th>Status</th><th>Att.</th><th>Note</th><th>Updated</th></tr></thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.shortId}>
+                  <td><TicketLink item={item} onOpen={onOpen} /></td>
+                  <td className="mono">{item.project}</td>
+                  <td><StatusTag status={item.status} /></td>
+                  <td className="num">{item.attempts}</td>
+                  <td className="muted">{item.note || '-'}</td>
+                  <td className="num">{ago(item.at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Completed({ items = [], onOpen }) {
+  return (
+    <>
+      <h2>Recently completed</h2>
+      {!items.length ? <Empty>No completed tickets yet.</Empty> : (
+        <div className="tblwrap">
+          <table>
+            <thead><tr><th>Ticket</th><th>Project</th><th>Kind</th><th>Agent</th><th>Att.</th><th>When</th></tr></thead>
+            <tbody>
+              {items.slice(0, 20).map((item) => (
+                <tr key={item.shortId}>
+                  <td><TicketLink item={item} onOpen={onOpen} /></td>
+                  <td className="mono">{item.project}</td>
+                  <td>{item.kind}</td>
+                  <td className="mono">{item.agent || '-'}</td>
+                  <td className="num">{item.attempts}</td>
+                  <td className="num">{ago(item.at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Activity({ items = [], onOpen }) {
+  return (
+    <>
+      <h2>Activity</h2>
+      {!items.length ? <Empty>No activity recorded yet.</Empty> : (
+        <div className="tblwrap">
+          <table>
+            <thead><tr><th>When</th><th>Ticket</th><th>Project</th><th>Change</th></tr></thead>
+            <tbody>
+              {items.map((item, index) => (
+                <tr key={`${item.shortId}-${item.at}-${index}`}>
+                  <td className="num">{ago(item.at)}</td>
+                  <td><TicketLink item={item} onOpen={onOpen} /></td>
+                  <td className="mono">{item.project}</td>
+                  <td>{item.type === 'transition' ? <><StatusTag status={item.from} /> <span className="muted">-&gt;</span> <StatusTag status={item.to} /></> : item.type}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function JsonBlock({ value }) {
+  return <pre className="detail">{JSON.stringify(value || {}, null, 2)}</pre>;
+}
+
+function EventTable({ events = [] }) {
+  if (!events.length) return <Empty>No events recorded.</Empty>;
+  return (
+    <div className="tblwrap">
+      <table>
+        <thead><tr><th>When</th><th>Type</th><th>Change</th><th>Payload</th></tr></thead>
+        <tbody>
+          {events.map((event) => (
+            <tr key={event.id}>
+              <td className="num">{ago(event.at)}</td>
+              <td>{event.type}</td>
+              <td>{event.type === 'transition' ? <><StatusTag status={event.from} /> <span className="muted">-&gt;</span> <StatusTag status={event.to} /></> : <span className="muted">-</span>}</td>
+              <td><span className="mono">{JSON.stringify(event.payload || {})}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RelationList({ items = [], onOpen }) {
+  if (!items.length) return <span className="muted">-</span>;
+  return items.map((item) => (
+    <div className="rowline relation-row" key={`${item.shortId}-${item.type}`}>
+      <TicketLink item={item} onOpen={onOpen} /> <StatusTag status={item.status} /> <span className="mono">{item.project || ''}</span>
+    </div>
+  ));
+}
+
+function OutboxTable({ items = [] }) {
+  if (!items.length) return <Empty>No sync operations for this ticket.</Empty>;
+  return (
+    <div className="tblwrap">
+      <table>
+        <thead><tr><th>Op</th><th>Attempts</th><th>Next</th><th>Done</th><th>Error</th></tr></thead>
+        <tbody>
+          {items.map((op) => (
+            <tr key={op.id}>
+              <td className="mono">{op.op}</td>
+              <td className="num">{op.attempts}</td>
+              <td className="num">{ago(op.nextAttemptAt)}</td>
+              <td className="num">{op.doneAt ? ago(op.doneAt) : <span className="muted">pending</span>}</td>
+              <td className="muted">{op.lastError || '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TicketModal({ ticketId, onClose, onOpen }) {
+  const [state, setState] = useState({ loading: true, data: null, error: '' });
+
+  useEffect(() => {
+    let alive = true;
+    setState({ loading: true, data: null, error: '' });
+    fetch(`/api/tickets/${encodeURIComponent(ticketId)}`, { cache: 'no-store' })
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'ticket load failed');
+        if (alive) setState({ loading: false, data: body, error: '' });
+      })
+      .catch((error) => {
+        if (alive) setState({ loading: false, data: null, error: error.message });
+      });
+    return () => { alive = false; };
+  }, [ticketId]);
+
+  const ticket = state.data?.ticket;
+
+  return (
+    <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="modal">
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">{state.loading ? 'Loading ticket...' : state.error ? 'Ticket unavailable' : ticket.title || '(untitled)'}</div>
+            {ticket ? <div className="rowline modal-status"><StatusTag status={ticket.status} /> <span className="mono">{ticket.shortId}</span></div> : null}
+          </div>
+          <button className="btn icon-btn modal-close" type="button" onClick={onClose} aria-label="Close ticket details"><X size={16} /></button>
+        </div>
+        {state.error ? <Empty error>{state.error}</Empty> : null}
+        {ticket ? (
+          <>
+            <div className="detail-grid">
+              <Field label="Project">{ticket.projectKey}</Field>
+              <Field label="Kind">{ticket.kind}</Field>
+              <Field label="Attempts">{ticket.attempts}</Field>
+              <Field label="Review rounds">{ticket.reviewRounds}</Field>
+              <Field label="Last agent">{ticket.lastAgent}</Field>
+              <Field label="Engine pin">{ticket.enginePin}</Field>
+              <Field label="Model pin">{ticket.modelPin}</Field>
+              <Field label="Branch">{ticket.branch}</Field>
+              <Field label="Base SHA">{ticket.baseSha}</Field>
+              <Field label="Head SHA">{ticket.headSha}</Field>
+              <Field label="Created">{ticket.createdAt}</Field>
+              <Field label="Updated">{ticket.updatedAt}</Field>
+              <Field label="Implemented">{ticket.implementedAt}</Field>
+              <Field label="Closed">{ticket.closedAt}</Field>
+              <Field label="Tracker">{ticket.tracker}</Field>
+              <Field label="Tracker URL">{ticket.url ? <a href={ticket.url} target="_blank" rel="noopener noreferrer">Open tracker</a> : ''}</Field>
+            </div>
+            <h2>Description</h2>
+            {ticket.body ? <pre className="detail">{ticket.body}</pre> : <Empty>No description stored.</Empty>}
+            <h2>Review feedback</h2>
+            {ticket.reviewFeedback ? <pre className="detail">{ticket.reviewFeedback}</pre> : <Empty>No review feedback.</Empty>}
+            <h2>Files</h2>
+            <div className="detail-grid">
+              <Field label="Changed files"><Chips items={ticket.changedFiles} /></Field>
+              <Field label="Native-sensitive files"><Chips items={ticket.nativeSensitiveFiles} /></Field>
+            </div>
+            <h2>Relations</h2>
+            <div className="detail-grid">
+              <Field label="Depends on"><RelationList items={state.data.dependencies} onOpen={onOpen} /></Field>
+              <Field label="Blocked by this"><RelationList items={state.data.blockedBy} onOpen={onOpen} /></Field>
+            </div>
+            <h2>Events</h2>
+            <EventTable events={state.data.events} />
+            <h2>Sync outbox</h2>
+            <OutboxTable items={state.data.outbox} />
+            <h2>Metadata</h2>
+            <div className="detail-grid">
+              <JsonBlock value={ticket.trackerMeta} />
+              <JsonBlock value={ticket.meta} />
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [ticketId, setTicketId] = useState('');
+  const [actionStatus, setActionStatus] = useState('');
+  const [restarting, setRestarting] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch('/api/data', { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'dashboard load failed');
+      setData(body);
+      setError('');
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setTicketId('');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const restartRunner = useCallback(async () => {
+    if (!window.confirm('Restart ticket-runner services?')) return;
+    setRestarting(true);
+    setActionStatus('Restarting...');
+    try {
+      const response = await fetch('/api/restart', { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'restart failed');
+      setActionStatus('Restart requested');
+      setTimeout(load, 4000);
+    } catch (restartError) {
+      setActionStatus(restartError.message);
+      setRestarting(false);
+    }
+  }, [load]);
+
+  const overview = useMemo(() => {
+    const byStatus = data?.store?.byStatus || {};
+    const active = (byStatus.queued || 0) + (byStatus.in_progress || 0) + (byStatus.in_review || 0) + (byStatus.testing || 0) + (byStatus.needs_info || 0);
+    return { byStatus, active };
+  }, [data]);
+
+  if (error && !data) {
+    return <main className="wrap"><Empty error>Failed to load: {error}</Empty></main>;
+  }
+  if (!data) {
+    return <main className="wrap"><Empty>Loading dashboard...</Empty></main>;
+  }
+
+  const runner = data.runner || {};
+  const store = data.store || {};
+  const runnerDot = runner.state === 'live' ? 'var(--good)' : runner.state === 'stale' ? 'var(--warning)' : 'var(--muted)';
+  const runnerText = runner.state === 'live' ? 'Runner live' : runner.state === 'stale' ? 'Runner stale' : 'Runner status unknown';
+
+  return (
+    <>
+      <div className="wrap">
+        <header>
+          <h1>{data.app} <span className="muted light">dashboard</span></h1>
+          <span className="pill"><Dot color={runnerDot} />{runnerText}{runner.heartbeat ? ` - ${ago(runner.heartbeat.at)}` : ''}</span>
+          {data.pollIntervalMs ? <span className="sub">poll {Math.round(data.pollIntervalMs / 1000)}s - max {data.maxAttempts} attempts</span> : null}
+          <div className="actions">
+            <span className="sub">{actionStatus}</span>
+            <button className="btn danger restart-btn" type="button" onClick={restartRunner} disabled={restarting}>
+              <RefreshCw size={14} /> Restart
+            </button>
+          </div>
+        </header>
+        <div className="sub">Updated {ago(data.generatedAt)} - auto-refreshes every 15s</div>
+
+        {error ? <div className="note err">Last refresh failed: {error}</div> : null}
+        {!store.available ? <Empty error>Ticket store unavailable: {store.error}</Empty> : null}
+
+        <h2>Overview</h2>
+        <div className="grid tiles">
+          <Tile value={store.totals?.tickets || 0} label="Tickets total" />
+          <Tile value={overview.active} label="Active in pipeline" />
+          <Tile value={overview.byStatus.done || 0} label="Completed" />
+          <Tile value={overview.byStatus.failed || 0} label="Failed" color={overview.byStatus.failed ? 'var(--critical)' : ''} />
+          <Tile value={(overview.byStatus.needs_info || 0) + (overview.byStatus.in_review || 0)} label="Awaiting human" />
+          <Tile value={store.totals?.outboxParked || 0} label="Parked sync ops" color={store.totals?.outboxParked ? 'var(--warning)' : ''} />
+        </div>
+
+        <h2>Agent providers &amp; quota</h2>
+        <ProviderCards providers={data.providers} />
+        <div className="note">
+          These coding CLIs do not expose a remaining-quota number. The runner detects rate limits reactively and fails over down the chain. Runs attributes each ticket to the provider that last worked it (from <span className="mono">last_agent</span>); token counts are reconstructed from per-invocation logs.
+        </div>
+
+        <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
+        <Connections connections={data.connections} />
+        <Projects data={data} onOpen={setTicketId} />
+        <NeedsAttention items={store.attention} onOpen={setTicketId} />
+        <Completed items={store.completed} onOpen={setTicketId} />
+        <Activity items={store.activity} onOpen={setTicketId} />
+        <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
+      </div>
+      {ticketId ? <TicketModal ticketId={ticketId} onClose={() => setTicketId('')} onOpen={setTicketId} /> : null}
+    </>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);

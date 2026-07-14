@@ -4,6 +4,7 @@ worktrees/
 state/
 self-heal-worktrees/
 node_modules/
+public/dashboard/
 
 # machine-specific runtime config (untracked per host)
 config.json

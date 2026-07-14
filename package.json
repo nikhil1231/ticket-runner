@@ -14,11 +14,22 @@
     "setup:service": "node scripts/install-service.js",
     "healthcheck": "node runner.js healthcheck",
     "dashboard": "node runner.js dashboard",
+    "dashboard:dev": "vite --config dashboard/vite.config.js --host 127.0.0.1",
+    "dashboard:build": "vite build --config dashboard/vite.config.js",
     "supervise": "node scripts/supervisor.js",
     "cleanup": "node runner.js cleanup",
     "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=22.5"
+  },
+  "dependencies": {
+    "lucide-react": "^1.24.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "vite": "^8.1.4"
   }
 }
