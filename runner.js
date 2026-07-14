@@ -29,9 +29,20 @@ const { applyTrackerCommands, upsertSnapshot } = require('./lib/cutover');
 const { importLegacyState } = require('./lib/import-legacy');
 
 const baseDir = __dirname;
+const QUEUE_EMPTY_LOG_INTERVAL_MS = 5 * 60 * 1000;
+let lastQueueEmptyLogAt = 0;
+let lastQueueWasEmpty = false;
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
+}
+
+function logQueueEmpty({ now = Date.now() } = {}) {
+  if (!lastQueueWasEmpty || now - lastQueueEmptyLogAt >= QUEUE_EMPTY_LOG_INTERVAL_MS) {
+    log('queue empty');
+    lastQueueEmptyLogAt = now;
+  }
+  lastQueueWasEmpty = true;
 }
 
 function loadEnv() {
@@ -279,13 +290,14 @@ async function tick(config, { dryRun = false } = {}) {
   }
   const candidates = store.readyTickets();
   if (!candidates.length) {
-    log('queue empty');
+    logQueueEmpty();
     if (!dryRun) {
       await flushOutbox({ store, trackerFor, log });
       store.exportJsonl();
     }
     return;
   }
+  lastQueueWasEmpty = false;
   log(`queue (${candidates.length}): ${candidates.map((ticket) => `"${ticket.title}" [${ticket.kind}/${ticket.projectKey || 'no project'}, attempt ${ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
     log(`dry run - would claim "${candidates[0].title}"`);
