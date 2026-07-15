@@ -35,6 +35,7 @@ test('a human override is one-shot and moves a successful push to Testing', asyn
   assert.deepEqual(updates[0], { forceDeploy: false });
   assert.equal(updates[1].status, 'testing');
   assert.equal(admitArgs.ticket.pageId, f.ticket.pageId);
+  assert.equal(admitArgs.allowNativeSensitive, true);
   assert.equal(result.compositeSha, 'stack-123');
   assert.match(comments[0], /cumulative Testing stack/);
 });

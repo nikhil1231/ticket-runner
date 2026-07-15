@@ -227,6 +227,45 @@ test('native-sensitive detection blocks config, native, plugin, and dependency c
   ]);
 });
 
+test('native-sensitive ticket admission parks in Needs info to avoid review requeue loops', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000032', 'Native config', '2026-01-01T00:00:00Z', 'In review');
+  const ref = addTicket(f, page, 'package.json', '{"native":true}\n');
+  ticketState.writeMeta(f.baseDir, ref.shortId, {
+    ...ticketState.readMeta(f.baseDir, ref.shortId),
+    nativeSensitiveFiles: ['package.json'],
+  });
+  const tracker = trackerFixture([page]);
+  const ticket = require('../lib/ticket').extractTicket(page);
+
+  const result = await integration.admitTicket({ ...f, ticket, tracker, services, log: () => {} });
+
+  assert.equal(result.status, 'excluded');
+  assert.equal(result.reason, 'native_sensitive');
+  assert.equal(page.properties.Status.status.name, 'Needs info');
+  assert.match(tracker.comments[0].message, /runner does not repeatedly re-implement/i);
+  assert.match(tracker.comments[0].message, /package\.json/);
+});
+
+test('native-sensitive ticket already in Testing is withdrawn to Needs info', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000033', 'Native stack entry', '2026-01-01T00:00:00Z');
+  const ref = addTicket(f, page, 'package.json', '{"native":true}\n');
+  ticketState.writeMeta(f.baseDir, ref.shortId, {
+    ...ticketState.readMeta(f.baseDir, ref.shortId),
+    nativeSensitiveFiles: ['package.json'],
+  });
+  const tracker = trackerFixture([page]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
+
+  assert.equal(result.status, 'deployed');
+  assert.deepEqual(result.tickets, []);
+  assert.equal(page.properties.Status.status.name, 'Needs info');
+  assert.match(tracker.comments[0].message, /requires human testing/i);
+});
+
 test('validation-only publisher composes a testing stack without EAS', async (t) => {
   const f = fixture(t);
   f.board = {
