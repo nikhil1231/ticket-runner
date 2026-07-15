@@ -811,6 +811,7 @@ function App() {
   const [actionStatus, setActionStatus] = useState('');
   const [restarting, setRestarting] = useState(false);
   const [view, setView] = useState(() => (window.location.hash === '#logs' ? 'logs' : 'dashboard'));
+  const [codeVersion, setCodeVersion] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -844,6 +845,18 @@ function App() {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
+  useEffect(() => {
+    const nextVersion = data?.dashboard?.codeVersion;
+    if (!nextVersion) return;
+    if (!codeVersion) {
+      setCodeVersion(nextVersion);
+      return;
+    }
+    if (nextVersion !== codeVersion) {
+      window.location.reload();
+    }
+  }, [codeVersion, data?.dashboard?.codeVersion]);
+
   const restartRunner = useCallback(async () => {
     if (!window.confirm('Restart ticket-runner services?')) return;
     setRestarting(true);
@@ -875,6 +888,7 @@ function App() {
 
   const runner = data.runner || {};
   const store = data.store || {};
+  const dashboard = data.dashboard || {};
   const runnerDot = runner.state === 'live' ? 'var(--good)' : runner.state === 'stale' ? 'var(--warning)' : 'var(--muted)';
   const runnerText = runner.state === 'live' ? 'Runner live' : runner.state === 'stale' ? 'Runner stale' : 'Runner status unknown';
   const setPage = (nextView) => {
@@ -905,6 +919,13 @@ function App() {
           </div>
         </header>
         <div className="sub">Updated {ago(data.generatedAt)} - auto-refreshes every 15s</div>
+        <div className="server-line">
+          {dashboard.url ? <span>Dashboard <span className="mono">{dashboard.url}</span></span> : null}
+          {dashboard.pid ? <span>PID <span className="mono">{dashboard.pid}</span></span> : null}
+          {dashboard.startedAt ? <span>started {ago(dashboard.startedAt)}</span> : null}
+          {dashboard.restartCommand ? <span>restart <span className="mono">{dashboard.restartCommand}</span></span> : null}
+          {dashboard.checkout ? <span>checkout <span className="mono">{dashboard.checkout}</span></span> : null}
+        </div>
 
         {view === 'logs' ? (
           <LogsPage services={data.services} />

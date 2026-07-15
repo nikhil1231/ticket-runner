@@ -114,6 +114,11 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   assert.equal(data.body.store.current.testing[0].shortId, 'testing00001');
   assert.equal(data.body.store.current.inFlight[0].shortId, 'tokrun000001');
   assert.equal(data.body.store.current.projectFlow[0].moving, 2);
+  assert.match(data.body.dashboard.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(data.body.dashboard.port, port);
+  assert.equal(data.body.dashboard.pid, process.pid);
+  assert.ok(data.body.dashboard.codeVersion);
+  assert.ok(data.body.dashboard.restartCommand);
   const codexProvider = data.body.providers.find((p) => p.name === 'codex');
   if (codexProvider) assert.equal(codexProvider.tokens, 2500);
 });

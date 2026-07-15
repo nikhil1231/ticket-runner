@@ -38,6 +38,11 @@ node runner.js dashboard [port] # read-only web dashboard (default :4600)
 npm run setup:service          # install/reload the runner + dashboard target
 ```
 
+The dashboard header shows its serving URL, process id, checkout path, and the
+restart command for the current platform. The browser polls for dashboard code
+fingerprint changes and reloads itself when a rebuilt or restarted dashboard is
+available.
+
 ## Deployment
 
 The runner is a self-managing host agent, not a stateless container: it drives

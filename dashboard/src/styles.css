@@ -67,6 +67,7 @@ tbody tr:last-child td{border-bottom:none}
 .note{color:var(--muted);font-size:12px;margin-top:8px;max-width:70ch}
 .empty{color:var(--muted);padding:18px;text-align:center;background:var(--surface);border:1px dashed var(--hair);border-radius:8px}
 .inline-empty{font-size:12px}
+.server-line{display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:3px}
 .rowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
 .chip{font-size:11px;padding:1px 7px;border-radius:6px;background:var(--surface-2);color:var(--ink-2);font-family:ui-monospace,Menlo,Consolas,monospace}
