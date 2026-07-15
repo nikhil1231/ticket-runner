@@ -207,6 +207,66 @@ test('pollCommands does not requeue when the board still matches the last mirror
   assert.equal(commands.length, 0); // board == last mirrored -> not a human action, no requeue
 });
 
+test('pollCommands ignores stale board status shortly after a mirror write', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(12, {
+    number: 12,
+    node_id: 'ISSUE_12',
+    title: 'Recently mirrored',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started', // stale board value after we mirrored "Needs info"
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '12',
+    projectKey: 'widgets',
+    title: 'Recently mirrored',
+    status: 'needs_info',
+    mirroredStatus: 'Not started',
+  });
+  store.setMirrorState(existing.id, { mirroredStatus: 'Needs info' });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 0);
+});
+
+test('pollCommands does not requeue stack-blocked Needs info tickets from the board', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(13, {
+    number: 13,
+    node_id: 'ISSUE_13',
+    title: 'Stack blocked',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '13',
+    projectKey: 'widgets',
+    title: 'Stack blocked',
+    status: 'needs_info',
+    mirroredStatus: 'Needs info',
+  });
+  store.recordImplementation(existing.id, { headSha: 'a'.repeat(40), nativeSensitiveFiles: ['package.json'] });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 0);
+});
+
 test('pollCommands does not re-cancel a ticket already in a terminal state', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
