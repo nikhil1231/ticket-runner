@@ -91,7 +91,10 @@ test('dashboard ticket details include local state around the ticket', (t) => {
 test('dashboard /api/data includes a token-usage rollup parsed from runs/', async (t) => {
   const { baseDir, db, store } = fixture(t);
   const ticket = seed(store, { trackerId: 'issue-3', shortId: 'tokrun000001', title: 'Token run' });
+  const testing = seed(store, { trackerId: 'issue-4', shortId: 'testing00001', title: 'Testing run' });
   store.transition(ticket.id, 'in_progress', { lastAgent: 'codex/gpt-5' });
+  store.transition(testing.id, 'in_progress');
+  store.transition(testing.id, 'testing');
   closeDb(db);
 
   const invDir = path.join(baseDir, 'runs', 'tokrun000001-1783000000000', 'feature-0-codex');
@@ -107,8 +110,10 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   assert.equal(data.body.tokens.available, true);
   assert.equal(data.body.tokens.byProvider.codex.tokens, 2500);
   assert.equal(data.body.tokens.byPhase.implementation.tokens, 2500);
+  assert.equal(data.body.store.current.running[0].shortId, 'tokrun000001');
+  assert.equal(data.body.store.current.testing[0].shortId, 'testing00001');
   assert.equal(data.body.store.current.inFlight[0].shortId, 'tokrun000001');
-  assert.equal(data.body.store.current.projectFlow[0].moving, 1);
+  assert.equal(data.body.store.current.projectFlow[0].moving, 2);
   const codexProvider = data.body.providers.find((p) => p.name === 'codex');
   if (codexProvider) assert.equal(codexProvider.tokens, 2500);
 });
@@ -147,6 +152,47 @@ test('dashboard exposes ticket details and restart action endpoints', async (t) 
   const logs = await requestJson(port, '/api/logs/ticket-runner?lines=100');
   assert.equal(logs.status, 200);
   assert.deepEqual(logs.body.lines, ['ticket-runner tail 100']);
+});
+
+test('dashboard exposes bounded task log tails for the newest run directory', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'issue-5', shortId: 'ticket000005', title: 'Running ticket' });
+  const logless = seed(store, { trackerId: 'issue-6', shortId: 'ticket000006', title: 'Logless ticket' });
+  store.transition(ticket.id, 'in_progress');
+  store.transition(logless.id, 'in_progress');
+  closeDb(db);
+
+  const oldDir = path.join(baseDir, 'runs', 'ticket000005-1783000000000', 'impl-0-codex');
+  const newDir = path.join(baseDir, 'runs', 'ticket000005-review-1783000100000', 'review-0-claude');
+  fs.mkdirSync(oldDir, { recursive: true });
+  fs.mkdirSync(newDir, { recursive: true });
+  fs.writeFileSync(path.join(oldDir, 'stdout.log'), 'old stdout\n');
+  fs.writeFileSync(path.join(newDir, 'stdout.log'), 'first stdout\nsecond stdout\n');
+  fs.writeFileSync(path.join(newDir, 'stderr.log'), 'first stderr\nsecond stderr\n');
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const logs = await requestJson(port, '/api/task-logs/ticket000005?lines=20');
+  assert.equal(logs.status, 200);
+  assert.equal(logs.body.ticket.shortId, 'ticket000005');
+  assert.equal(logs.body.run.name, 'ticket000005-review-1783000100000');
+  assert.equal(logs.body.invocations[0].tag, 'review-0-claude');
+  assert.deepEqual(logs.body.invocations[0].stderrLines, ['first stderr', 'second stderr']);
+  assert.deepEqual(logs.body.invocations[0].stdoutLines, ['first stdout', 'second stdout']);
+
+  const empty = await requestJson(port, '/api/task-logs/ticket000006');
+  assert.equal(empty.status, 200);
+  assert.equal(empty.body.ticket.shortId, 'ticket000006');
+  assert.equal(empty.body.run, null);
+  assert.deepEqual(empty.body.invocations, []);
+
+  const unknown = await requestJson(port, '/api/task-logs/not-a-ticket');
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.body.ticket, null);
+  assert.equal(unknown.body.run, null);
+  assert.deepEqual(unknown.body.invocations, []);
 });
 
 test('dashboard shows a clear failure page when React build is missing', async (t) => {

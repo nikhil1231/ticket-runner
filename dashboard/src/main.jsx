@@ -335,20 +335,134 @@ function MiniTicketList({ items = [], onOpen, empty }) {
   );
 }
 
+function LogBox({ title, lines = [] }) {
+  if (!lines.length) return null;
+  return (
+    <div className="task-log-block">
+      <div className="task-log-title">{title}</div>
+      <pre className="task-logs">{lines.join('\n')}</pre>
+    </div>
+  );
+}
+
+function RunningTaskLog({ task }) {
+  const [state, setState] = useState({ loading: false, data: null, error: '' });
+
+  const loadTaskLogs = useCallback(async () => {
+    if (!task?.shortId) return;
+    setState((current) => ({ ...current, loading: true }));
+    try {
+      const response = await fetch(`/api/task-logs/${encodeURIComponent(task.shortId)}?lines=300`, { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'task log load failed');
+      setState({ loading: false, data: body, error: '' });
+    } catch (taskLogError) {
+      setState((current) => ({ loading: false, data: current.data, error: taskLogError.message }));
+    }
+  }, [task?.shortId]);
+
+  useEffect(() => {
+    loadTaskLogs();
+    const timer = setInterval(loadTaskLogs, 4000);
+    return () => clearInterval(timer);
+  }, [loadTaskLogs]);
+
+  const invocations = state.data?.invocations || [];
+  const hasLines = invocations.some((inv) => inv.stderrLines?.length || inv.stdoutLines?.length);
+
+  return (
+    <div className="task-log-panel">
+      <div className="task-log-head">
+        <span className="mono">{state.data?.run?.name || 'no run directory yet'}</span>
+        <span className="sub">{state.loading ? 'Loading...' : state.data?.generatedAt ? `Updated ${ago(state.data.generatedAt)}` : ''}</span>
+      </div>
+      {state.error ? <div className="note err">{state.error}</div> : null}
+      {!state.loading && !state.data?.run ? <Empty>No run logs found for this task yet.</Empty> : null}
+      {state.data?.run && !hasLines ? <Empty>No CLI output has been written yet.</Empty> : null}
+      {invocations.map((invocation) => (
+        <div className="task-invocation" key={invocation.tag}>
+          <div className="rowline task-invocation-head">
+            <span className="chip">{invocation.tag}</span>
+            {invocation.updatedAt ? <span className="muted nowrap">{ago(invocation.updatedAt)}</span> : null}
+          </div>
+          <LogBox title="stderr" lines={invocation.stderrLines} />
+          <LogBox title="stdout" lines={invocation.stdoutLines} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InFlightPanel({ items = [], onOpen }) {
+  const [activeShortId, setActiveShortId] = useState(items[0]?.shortId || '');
+
+  useEffect(() => {
+    if (!items.length) {
+      setActiveShortId('');
+      return;
+    }
+    if (!items.some((item) => item.shortId === activeShortId)) {
+      setActiveShortId(items[0].shortId);
+    }
+  }, [activeShortId, items]);
+
+  const active = items.find((item) => item.shortId === activeShortId) || items[0] || null;
+
+  return (
+    <section className="card state-card active-work">
+      <h3><span>In flight</span><span className="tag">{items.length} running</span></h3>
+      {!items.length ? <Empty>No tickets are currently running.</Empty> : (
+        <>
+          <div className="task-tabs" role="tablist" aria-label="Running tasks">
+            {items.map((item) => (
+              <button
+                className={`task-tab${item.shortId === active?.shortId ? ' active' : ''}`}
+                key={item.shortId}
+                type="button"
+                role="tab"
+                aria-selected={item.shortId === active?.shortId}
+                onClick={() => setActiveShortId(item.shortId)}
+              >
+                <span>{item.title || '(untitled)'}</span>
+                <span className="mono">{item.shortId}</span>
+              </button>
+            ))}
+          </div>
+          {active ? (
+            <>
+              <div className="active-task-meta">
+                <TicketLink item={active} onOpen={onOpen} />
+                <span className="mono">{active.project}</span>
+                <StatusTag status={active.status} />
+                {active.agent ? <span className="mono">{active.agent}</span> : null}
+                <span className="muted nowrap">{ago(active.at)}</span>
+              </div>
+              <RunningTaskLog task={active} />
+            </>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
 function CurrentState({ data, onOpen }) {
   const store = data.store || {};
   const current = store.current || {};
   const byStatus = store.byStatus || {};
   const stackSummary = current.stackSummary || {};
   const syncColor = store.totals?.outboxParked ? 'var(--warning)' : store.totals?.outboxPending ? 'var(--c3)' : 'var(--good)';
+  const running = current.running || current.inFlight || [];
+  const testing = current.testing || [];
 
   return (
     <>
       <h2>Current state</h2>
       <div className="state-grid">
-        <section className="card state-card wide">
-          <h3><span>In flight</span><span className="tag">{current.inFlight?.length || 0} moving</span></h3>
-          <MiniTicketList items={current.inFlight} onOpen={onOpen} empty="No tickets are currently running or testing." />
+        <InFlightPanel items={running} onOpen={onOpen} />
+        <section className="card state-card">
+          <h3><span>Testing</span><span className="tag">{testing.length} testing</span></h3>
+          <MiniTicketList items={testing} onOpen={onOpen} empty="No tickets are currently in testing." />
         </section>
         <section className="card state-card">
           <h3><span>Up next</span><span className="tag">{byStatus.queued || 0} queued</span></h3>
