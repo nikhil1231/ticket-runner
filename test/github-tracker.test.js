@@ -52,6 +52,8 @@ function fakeTransport() {
       if (method === 'POST' && /\/comments$/.test(apiPath)) return { status: 201, data: { id: 1, body: body.body } };
       if (method === 'GET' && /\/comments/.test(apiPath)) return { status: 200, data: [] };
       if (method === 'GET' && /\/issues\?/.test(apiPath)) {
+        // A caller-supplied etag simulates "no issues updated since last poll".
+        if (opts.etag) return { status: 304 };
         const query = new URLSearchParams(apiPath.slice(apiPath.indexOf('?') + 1));
         const assignee = query.get('assignee');
         const data = [...issues.values()].filter((issue) => {
@@ -153,6 +155,32 @@ test('pollCommands emits cancel when the board moves an open ticket to Cancelled
 
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'cancel');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands requeues an approved ticket from the board status even when the issue list is unchanged (304)', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(9, {
+    number: 9,
+    node_id: 'ISSUE_9',
+    title: 'Approved epic',
+    body: 'Brief',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started', // human moved it In review -> Not started (approve)
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '9', projectKey: 'widgets', kind: 'epic', title: 'Approved epic', status: 'in_review' });
+  // Simulate the issue list returning 304: the board-status change didn't bump
+  // the issue's updatedAt, so an etag/since-based issue poll sees nothing new.
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'requeue');
   assert.equal(commands[0].ticket.id, existing.id);
 });
 
