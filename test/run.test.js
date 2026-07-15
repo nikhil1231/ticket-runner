@@ -2,7 +2,20 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractCommitMessage, compactAgentSummary } = require('../lib/run');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { openDb, closeDb } = require('../lib/db');
+const { createStore } = require('../lib/store');
+const worktrees = require('../lib/worktree');
+const { runTicket, extractCommitMessage, compactAgentSummary } = require('../lib/run');
+
+function fixture(t) {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-run-'));
+  const db = openDb(baseDir);
+  t.after(() => { closeDb(db); fs.rmSync(baseDir, { recursive: true, force: true }); });
+  return { baseDir, store: createStore({ baseDir, db }) };
+}
 
 test('uses the agent commit message and enforces a lowercase scope', () => {
   const message = extractCommitMessage(
@@ -38,4 +51,77 @@ test('preserves the end when an unstructured summary must be shortened', () => {
   const summary = compactAgentSummary(`${'noise '.repeat(100)}IMPORTANT RESULT`, 100);
   assert.match(summary, /^\[Earlier detail omitted\]/);
   assert.match(summary, /IMPORTANT RESULT$/);
+});
+
+test('runTicket bases dependent work on the deployed testing stack', async (t) => {
+  const { baseDir, store } = fixture(t);
+  const repoPath = path.join(baseDir, 'repo');
+  fs.mkdirSync(repoPath);
+  const blocker = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '1',
+    projectKey: 'widgets',
+    kind: 'feature',
+    title: 'Base feature',
+    status: 'testing',
+  });
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '2',
+    projectKey: 'widgets',
+    kind: 'feature',
+    title: 'Dependent feature',
+    status: 'queued',
+  });
+  store.addDependency(ticket.id, blocker.id);
+  store.saveStack('widgets', {
+    status: 'deployed',
+    baseSha: 'main-sha',
+    compositeSha: 'stack-sha',
+    tickets: [{ pageId: blocker.pageId, shortId: blocker.shortId, headSha: 'head-sha' }],
+  });
+
+  const original = {
+    fetchBranch: worktrees.fetchBranch,
+    createWorktree: worktrees.createWorktree,
+    head: worktrees.head,
+  };
+  const seen = {};
+  worktrees.fetchBranch = () => 'main-sha';
+  worktrees.createWorktree = (args) => {
+    Object.assign(seen, args);
+    return { dir: path.join(baseDir, 'wt'), branch: 'ai/dependent', baseSha: args.baseRef };
+  };
+  worktrees.head = () => 'stack-sha';
+
+  const tracker = {
+    mirror: async () => {},
+    comment: async () => {},
+    fetchBody: async () => 'Implement this on top of the base feature.',
+    fetchComments: async () => [],
+  };
+
+  try {
+    const result = await runTicket({
+      config: {
+        baseDir,
+        repoPath,
+        runTimeoutMs: 1000,
+        maxAttempts: 2,
+        fallbackPolicies: { feature: [] },
+        adapters: {},
+        selfHealing: { enabled: false, maxRescuePasses: 0 },
+        store,
+      },
+      board: { key: 'widgets', scope: 'widgets', integration: { enabled: true, remote: 'origin', mainBranch: 'main' } },
+      ticket: store.getById(ticket.id),
+      log: () => {},
+      services: { tracker, store, runSetup: () => {} },
+    });
+
+    assert.equal(seen.baseRef, 'stack-sha');
+    assert.equal(result.status, 'failed');
+  } finally {
+    Object.assign(worktrees, original);
+  }
 });

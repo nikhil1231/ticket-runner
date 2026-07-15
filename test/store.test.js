@@ -100,8 +100,16 @@ test('ready query honors dependency chains', (t) => {
   // B is blocked by A; only A is ready
   let ready = store.readyTickets().map((tk) => tk.title);
   assert.deepEqual(ready, ['A']);
-  // finishing A unblocks B
+  // review is not enough to unblock dependent work
   store.transition(a.id, 'in_progress');
+  store.transition(a.id, 'in_review');
+  ready = store.readyTickets().map((tk) => tk.title);
+  assert.deepEqual(ready, []);
+  // admitting A to the testing stack unblocks B
+  store.transition(a.id, 'testing');
+  ready = store.readyTickets().map((tk) => tk.title);
+  assert.deepEqual(ready, ['B']);
+  // finishing A keeps B unblocked
   store.transition(a.id, 'testing');
   store.transition(a.id, 'done');
   ready = store.readyTickets().map((tk) => tk.title);
