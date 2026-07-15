@@ -184,6 +184,29 @@ test('pollCommands requeues an approved ticket from the board status even when t
   assert.equal(commands[0].ticket.id, existing.id);
 });
 
+test('pollCommands does not requeue when the board still matches the last mirrored status (mirror lag)', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(11, {
+    number: 11,
+    node_id: 'ISSUE_11',
+    title: 'Just-claimed ticket',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started', // board hasn't caught up to "In progress" yet
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '11', projectKey: 'widgets', title: 'Just-claimed ticket', status: 'queued', mirroredStatus: 'Not started' });
+  store.transition(existing.id, 'in_progress'); // runner claimed it; the "In progress" mirror hasn't propagated
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1'); // 304: no issue update
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 0); // board == last mirrored -> not a human action, no requeue
+});
+
 test('pollCommands does not re-cancel a ticket already in a terminal state', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
