@@ -3,7 +3,12 @@
   --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
   --hair:rgba(11,11,11,.10); --grid:#e1e0d9;
   --good:#0ca30c; --warning:#eda100; --serious:#ec835a; --critical:#d03b3b;
-  --c1:#2a78d6; --c2:#1baf7a; --c3:#eda100; --c5:#4a3aa7; --c8:#eb6834;
+  /* Fixed 8-hue categorical palette (dataviz reference palette) — project
+     identity pills hash into these slots, never a per-project color list. */
+  --c1:#2a78d6; --c2:#1baf7a; --c3:#eda100; --c4:#008300; --c5:#4a3aa7; --c6:#e34948; --c7:#e87ba4; --c8:#eb6834;
+  /* Per-slot foreground for text on a *filled* slot pill, computed for WCAG
+     contrast against that slot's own hex (not the app's ink/theme tokens). */
+  --c1-ink:#0b0b0b; --c2-ink:#0b0b0b; --c3-ink:#0b0b0b; --c4-ink:#fff; --c5-ink:#fff; --c6-ink:#0b0b0b; --c7-ink:#0b0b0b; --c8-ink:#0b0b0b;
   --accent:#2a78d6;
 }
 @media (prefers-color-scheme:dark){:root{
@@ -11,7 +16,8 @@
   --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
   --hair:rgba(255,255,255,.10); --grid:#2c2c2a;
   --good:#0ca30c; --warning:#c98500; --serious:#ec835a; --critical:#e05757;
-  --c1:#3987e5; --c2:#199e70; --c3:#c98500; --c5:#9085e9; --c8:#d95926;
+  --c1:#3987e5; --c2:#199e70; --c3:#c98500; --c4:#008300; --c5:#9085e9; --c6:#e66767; --c7:#d55181; --c8:#d95926;
+  --c1-ink:#0b0b0b; --c2-ink:#0b0b0b; --c3-ink:#0b0b0b; --c4-ink:#fff; --c5-ink:#0b0b0b; --c6-ink:#0b0b0b; --c7-ink:#0b0b0b; --c8-ink:#0b0b0b;
   --accent:#3987e5;
 }}
 *{box-sizing:border-box}
@@ -61,6 +67,7 @@ td.num{font-variant-numeric:tabular-nums;color:var(--ink-2);white-space:nowrap}
 .tblwrap.padded{padding:14px 15px}
 tbody tr:last-child td{border-bottom:none}
 .tag{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--hair);white-space:nowrap;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.project-pill{font-size:11px;padding:1px 8px;border-radius:999px;white-space:nowrap;font-weight:650;display:inline-flex;align-items:center;background:var(--proj-bg);color:var(--proj-ink)}
 .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12px;color:var(--ink-2)}
 .muted{color:var(--muted)}
 .light{font-weight:400}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CircleHelp, LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
 import './styles.css';
@@ -69,6 +69,40 @@ function StatusTag({ status }) {
     <span className="tag">
       <Dot color={STATUS_COLOR[status] || 'var(--muted)'} />
       {STATUS_LABEL[status] || status}
+    </span>
+  );
+}
+
+// Categorical identity color for a project, from the fixed 8-hue palette
+// defined in styles.css (--c1..--c8 + matching --cN-ink foreground). Slots are
+// assigned by sorted position in the configured project list — stable and
+// collision-free for the realistic case of <= 8 projects — with a hash
+// fallback for any project key outside that list, so nothing is ever
+// unstyled and no per-project color list needs maintaining.
+const PROJECT_HUES = 8;
+
+function hashString(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  return Math.abs(hash);
+}
+
+function buildProjectPalette(projects = []) {
+  const keys = [...new Set(projects.map((p) => p.key).filter(Boolean))].sort();
+  const map = new Map();
+  keys.forEach((key, index) => map.set(key, (index % PROJECT_HUES) + 1));
+  return map;
+}
+
+const ProjectPaletteContext = createContext(new Map());
+
+function ProjectTag({ project }) {
+  const palette = useContext(ProjectPaletteContext);
+  if (!project) return null;
+  const slot = palette.get(project) || (hashString(project) % PROJECT_HUES) + 1;
+  return (
+    <span className="project-pill" style={{ '--proj-bg': `var(--c${slot})`, '--proj-ink': `var(--c${slot}-ink)` }}>
+      {project}
     </span>
   );
 }
@@ -264,7 +298,7 @@ function Projects({ data, onOpen }) {
             const recent = (store.completed || []).filter((item) => item.project === project.key).slice(0, 4);
             return (
               <div className="card" key={project.key}>
-                <h3>{project.key}<span className="tag">{project.trackerType}</span></h3>
+                <h3><ProjectTag project={project.key} /><span className="tag">{project.trackerType}</span></h3>
                 <div className="k mono">{project.repoPath}</div>
                 <div className="rowline spaced">
                   <span className="chip">publish: {project.publisherType}{project.easChannel ? ` (${project.easChannel})` : ''}</span>
@@ -353,7 +387,7 @@ function NeedsInfoPanel({ items = [], blockerIds, onOpen }) {
                 <TicketLink item={item} onOpen={onOpen} />
               </div>
               <div className="state-meta">
-                <span className="mono">{item.project}</span>
+                <ProjectTag project={item.project} />
                 <span className="muted">{item.attempts} attempt{item.attempts === 1 ? '' : 's'}</span>
                 {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">tracker</a> : null}
                 <span className="muted nowrap">{ago(item.at)}</span>
@@ -395,7 +429,7 @@ function Blockages({ blockages, onOpen }) {
                   <TicketLink item={item} onOpen={onOpen} />
                 </div>
                 <div className="state-meta">
-                  <span className="mono">{item.project}</span>
+                  <ProjectTag project={item.project} />
                   <StatusTag status={item.status} />
                   <span className="chip warn">blocks {item.blocks.length}</span>
                   {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">tracker</a> : null}
@@ -414,7 +448,7 @@ function Blockages({ blockages, onOpen }) {
                   <TicketLink item={item} onOpen={onOpen} />
                 </div>
                 <div className="state-meta">
-                  <span className="mono">{item.project}</span>
+                  <ProjectTag project={item.project} />
                   <StatusTag status={item.status} />
                   <span className="muted">waiting on</span>
                   {item.blockedBy.map((shortId) => (
@@ -439,7 +473,7 @@ function MiniTicketList({ items = [], onOpen, empty }) {
           <div className="state-main">
             <TicketLink item={item} onOpen={onOpen} />
             <div className="state-meta">
-              <span className="mono">{item.project}</span>
+              <ProjectTag project={item.project} />
               <StatusTag status={item.status} />
               {item.blocked ? <BlockageTag role="blocked" /> : null}
               {item.agent ? <span className="mono">{item.agent}</span> : null}
@@ -549,7 +583,7 @@ function InFlightPanel({ items = [], onOpen }) {
             <>
               <div className="active-task-meta">
                 <TicketLink item={active} onOpen={onOpen} />
-                <span className="mono">{active.project}</span>
+                <ProjectTag project={active.project} />
                 <StatusTag status={active.status} />
                 {active.agent ? <span className="mono">{active.agent}</span> : null}
                 <span className="muted nowrap">{ago(active.at)}</span>
@@ -595,7 +629,7 @@ function CurrentState({ data, onOpen }) {
             <div className="flow-list">
               {current.projectFlow.map((project) => (
                 <div className="flow-row" key={project.project}>
-                  <span className="mono">{project.project}</span>
+                  <ProjectTag project={project.project} />
                   <span className="chip">{project.moving} moving</span>
                   <span className="chip">{project.queued} queued</span>
                   {project.blocked ? <span className="chip warn">{project.blocked} blocked</span> : null}
@@ -644,7 +678,7 @@ function NeedsAttention({ items = [], blockerIds, onOpen }) {
               {items.map((item) => (
                 <tr key={item.shortId}>
                   <td><TicketLink item={item} onOpen={onOpen} />{blockerIds?.has(item.shortId) ? <> <BlockageTag role="blocker" /></> : null}</td>
-                  <td className="mono">{item.project}</td>
+                  <td><ProjectTag project={item.project} /></td>
                   <td><StatusTag status={item.status} /></td>
                   <td className="num">{item.attempts}</td>
                   <td className="muted">{item.note || '-'}</td>
@@ -671,7 +705,7 @@ function Completed({ items = [], onOpen }) {
               {items.slice(0, 20).map((item) => (
                 <tr key={item.shortId}>
                   <td><TicketLink item={item} onOpen={onOpen} /></td>
-                  <td className="mono">{item.project}</td>
+                  <td><ProjectTag project={item.project} /></td>
                   <td>{item.kind}</td>
                   <td className="mono">{item.agent || '-'}</td>
                   <td className="num">{item.attempts}</td>
@@ -699,7 +733,7 @@ function Activity({ items = [], onOpen }) {
                 <tr key={`${item.shortId}-${item.at}-${index}`}>
                   <td className="num">{ago(item.at)}</td>
                   <td><TicketLink item={item} onOpen={onOpen} /></td>
-                  <td className="mono">{item.project}</td>
+                  <td><ProjectTag project={item.project} /></td>
                   <td>{item.type === 'transition' ? <><StatusTag status={item.from} /> <span className="muted">-&gt;</span> <StatusTag status={item.to} /></> : item.type}</td>
                 </tr>
               ))}
@@ -740,7 +774,7 @@ function RelationList({ items = [], onOpen }) {
   if (!items.length) return <span className="muted">-</span>;
   return items.map((item) => (
     <div className="rowline relation-row" key={`${item.shortId}-${item.type}`}>
-      <TicketLink item={item} onOpen={onOpen} /> <StatusTag status={item.status} /> <span className="mono">{item.project || ''}</span>
+      <TicketLink item={item} onOpen={onOpen} /> <StatusTag status={item.status} /> <ProjectTag project={item.project} />
     </div>
   ));
 }
@@ -995,6 +1029,7 @@ function App() {
     const active = (byStatus.queued || 0) + (byStatus.in_progress || 0) + (byStatus.in_review || 0) + (byStatus.testing || 0) + (byStatus.needs_info || 0);
     return { byStatus, active };
   }, [data]);
+  const projectPalette = useMemo(() => buildProjectPalette(data?.projects), [data?.projects]);
 
   if (error && !data) {
     return <main className="wrap"><Empty error>Failed to load: {error}</Empty></main>;
@@ -1015,7 +1050,7 @@ function App() {
   };
 
   return (
-    <>
+    <ProjectPaletteContext.Provider value={projectPalette}>
       <div className="wrap">
         <header>
           <h1>{data.app} <span className="muted light">dashboard</span></h1>
@@ -1085,7 +1120,7 @@ function App() {
         )}
       </div>
       {ticketId ? <TicketModal ticketId={ticketId} onClose={() => setTicketId('')} onOpen={setTicketId} /> : null}
-    </>
+    </ProjectPaletteContext.Provider>
   );
 }
 
