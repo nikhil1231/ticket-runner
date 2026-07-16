@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { openDb, closeDb } = require('../lib/db');
 const { createStore } = require('../lib/store');
-const { collectTicketDetails, startServer } = require('../lib/dashboard');
+const { collectTicketDetails, startServer, summarizeTranscript } = require('../lib/dashboard');
 
 function fixture(t) {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-dashboard-'));
@@ -275,6 +275,139 @@ test('dashboard exposes bounded task log tails for the newest run directory', as
   assert.equal(unknown.body.ticket, null);
   assert.equal(unknown.body.run, null);
   assert.deepEqual(unknown.body.invocations, []);
+});
+
+test('summarizeTranscript collapses codex tool-call and patch noise, keeps narration', () => {
+  const transcript = [
+    'OpenAI Codex v0.142.5',
+    '--------',
+    'workdir: /worktree',
+    'session id: abc',
+    '--------',
+    'user',
+    'you are completing a ticket...',
+    'lots more prompt text',
+    'codex',
+    'I will look at the recall endpoint before editing.',
+    'exec',
+    '/bin/bash -lc "rg -n recall ." in /worktree',
+    ' succeeded in 12ms:',
+    'server/main.py:10:def recall():',
+    'server/main.py:20:def recall_again():',
+    'static/app.js:5:recall()',
+    'codex',
+    'Making the grade call synchronous now.',
+    'apply patch',
+    'patch: completed',
+    'server/main.py',
+    'diff --git a/server/main.py b/server/main.py',
+    'index 111..222',
+    '--- a/server/main.py',
+    '+++ b/server/main.py',
+    '@@ -10,3 +10,3 @@',
+    '-    old line',
+    '+    new line',
+    ' context line',
+    'diff --git a/server/main.py b/server/main.py',
+    'index 333..444',
+    '--- a/server/main.py',
+    '+++ b/server/main.py',
+    '@@ -30,1 +30,1 @@',
+    '-old',
+    '+new',
+    'codex',
+    'Done — grading now happens inline.',
+  ].join('\n');
+
+  const out = summarizeTranscript(transcript);
+
+  assert.match(out, /workdir: \/worktree/);
+  assert.match(out, /I will look at the recall endpoint before editing\./);
+  assert.match(out, /Making the grade call synchronous now\./);
+  assert.match(out, /Done — grading now happens inline\./);
+  assert.doesNotMatch(out, /you are completing a ticket/);
+  assert.doesNotMatch(out, /lots more prompt text/);
+  assert.match(out, /… ticket prompt omitted/);
+  // The exec command + status line survive; the three grep-result lines collapse to one.
+  assert.match(out, /rg -n recall \./);
+  assert.match(out, /succeeded in 12ms:/);
+  assert.doesNotMatch(out, /recall_again/);
+  assert.match(out, /… 3 line\(s\) of output collapsed/);
+  // The diff hunk body is gone; only the patch status and one deduped file header remain.
+  assert.doesNotMatch(out, /old line/);
+  assert.doesNotMatch(out, /@@ -10,3/);
+  assert.match(out, /patch: completed/);
+  const dashboardDiffHeaders = out.split('\n').filter((line) => line === 'diff --git a/server/main.py b/server/main.py');
+  assert.equal(dashboardDiffHeaders.length, 1);
+});
+
+test('summarizeTranscript collapses a diff pasted into the final narration message, with no closing marker', () => {
+  // Regression: codex's own final response sometimes recaps a full diff as
+  // plain text after COMMIT_MESSAGE, rather than through an "apply patch"
+  // block — and the transcript can end right there with no further marker.
+  const transcript = [
+    'codex',
+    'SUMMARY: did the thing.',
+    'CHANGES:',
+    '- server/main.py: removed the background task.',
+    'COMMIT_MESSAGE: fix: make it sync',
+    'diff --git a/server/main.py b/server/main.py',
+    'index 111..222',
+    '--- a/server/main.py',
+    '+++ b/server/main.py',
+    '@@ -10,3 +10,3 @@',
+    '-    old line',
+    '+    new line',
+    ' context line',
+    'tokens used',
+    '67,165',
+  ].join('\n');
+
+  const out = summarizeTranscript(transcript);
+
+  assert.match(out, /SUMMARY: did the thing\./);
+  assert.match(out, /- server\/main\.py: removed the background task\./);
+  assert.match(out, /diff --git a\/server\/main\.py b\/server\/main\.py/);
+  assert.doesNotMatch(out, /old line/);
+  assert.doesNotMatch(out, /@@ -10,3/);
+  // Content after the diff, with no closing marker before it, still survives.
+  assert.match(out, /tokens used/);
+  assert.match(out, /67,165/);
+});
+
+test('summarizeTranscript is a no-op on output that is not a codex transcript', () => {
+  const plain = 'Let\'s review this patch.\n\n```js\nconst x = 1;\n```\n\nLooks fine.';
+  assert.equal(summarizeTranscript(plain), plain);
+});
+
+test('/api/task-logs collapses a codex transcript before applying the line-count tail', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'issue-7', shortId: 'ticket000007', title: 'Noisy ticket' });
+  store.transition(ticket.id, 'in_progress');
+  closeDb(db);
+
+  const dir = path.join(baseDir, 'runs', 'ticket000007-1783000200000', 'impl-0-codex');
+  fs.mkdirSync(dir, { recursive: true });
+  const transcript = [
+    'OpenAI Codex v0.142.5', '--------', 'session id: abc', '--------',
+    'codex', 'Looking at the file first.',
+    'exec', 'rg -n foo .', ' succeeded in 1ms:',
+    ...Array.from({ length: 50 }, (_, i) => `match/line/${i}.py:1:foo`),
+    'codex', 'Applied the fix.',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'stderr.log'), transcript);
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const logs = await requestJson(port, '/api/task-logs/ticket000007?lines=20');
+  assert.equal(logs.status, 200);
+  const lines = logs.body.invocations[0].stderrLines;
+  assert.ok(lines.some((line) => line.includes('Looking at the file first.')));
+  assert.ok(lines.some((line) => line.includes('Applied the fix.')));
+  assert.ok(lines.some((line) => /… \d+ line\(s\) of output collapsed/.test(line)));
+  assert.equal(lines.some((line) => line.includes('match/line/')), false);
 });
 
 test('dashboard shows a clear failure page when React build is missing', async (t) => {

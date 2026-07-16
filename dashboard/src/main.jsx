@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CircleHelp, LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
 import './styles.css';
@@ -486,12 +486,29 @@ function MiniTicketList({ items = [], onOpen, empty }) {
   );
 }
 
+// Pinned to the bottom by default (so live output reads like a tail -f) but
+// stops re-pinning the instant the reader scrolls up to look at history, and
+// resumes once they scroll back near the bottom.
 function LogBox({ title, lines = [] }) {
+  const ref = useRef(null);
+  const pinnedRef = useRef(true);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
+  const handleScroll = () => {
+    const el = ref.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+
   if (!lines.length) return null;
   return (
     <div className="task-log-block">
       <div className="task-log-title">{title}</div>
-      <pre className="task-logs">{lines.join('\n')}</pre>
+      <pre className="task-logs" ref={ref} onScroll={handleScroll}>{lines.join('\n')}</pre>
     </div>
   );
 }
@@ -536,8 +553,11 @@ function RunningTaskLog({ task }) {
             <span className="chip">{invocation.tag}</span>
             {invocation.updatedAt ? <span className="muted nowrap">{ago(invocation.updatedAt)}</span> : null}
           </div>
-          <LogBox title="stderr" lines={invocation.stderrLines} />
-          <LogBox title="stdout" lines={invocation.stdoutLines} />
+          {/* codex writes its live narration/tool-calls to stderr and only a final
+              summary to stdout; other engines are the reverse or write everything
+              to stdout — the stdout/stderr split is an implementation detail the
+              viewer shouldn't have to reason about, so show one combined feed. */}
+          <LogBox title="Activity" lines={[...(invocation.stderrLines || []), ...(invocation.stdoutLines || [])]} />
         </div>
       ))}
     </div>
