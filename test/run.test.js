@@ -8,7 +8,8 @@ const path = require('path');
 const { openDb, closeDb } = require('../lib/db');
 const { createStore } = require('../lib/store');
 const worktrees = require('../lib/worktree');
-const { runTicket, extractCommitMessage, compactAgentSummary } = require('../lib/run');
+const integration = require('../lib/integration');
+const { runTicket, buildPrompt, applyReviewOutcome, extractCommitMessage, compactAgentSummary } = require('../lib/run');
 
 function fixture(t) {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-run-'));
@@ -51,6 +52,124 @@ test('preserves the end when an unstructured summary must be shortened', () => {
   const summary = compactAgentSummary(`${'noise '.repeat(100)}IMPORTANT RESULT`, 100);
   assert.match(summary, /^\[Earlier detail omitted\]/);
   assert.match(summary, /IMPORTANT RESULT$/);
+});
+
+test('buildPrompt renders the full accumulated review history, oldest first', () => {
+  const prompt = buildPrompt({
+    ticket: {
+      title: 'T', reviewFeedback: 'stale single note - should not appear',
+      reviewHistory: [
+        { round: 1, reviewer: 'codex', notes: 'missing guard in reapply' },
+        { round: 2, reviewer: 'claude', notes: 'never stamps on first set' },
+      ],
+    },
+    body: 'do the thing',
+    board: { key: 'widgets', scope: 'widgets' },
+  });
+  assert.match(prompt, /reviewers have requested changes on this exact ticket before/);
+  const first = prompt.indexOf('missing guard in reapply');
+  const second = prompt.indexOf('never stamps on first set');
+  assert.ok(first > -1 && second > -1 && first < second);
+  assert.doesNotMatch(prompt, /stale single note/);
+});
+
+test('buildPrompt falls back to the single reviewFeedback note when there is no history yet', () => {
+  const prompt = buildPrompt({
+    ticket: { title: 'T', reviewFeedback: 'fix the thing', reviewHistory: [] },
+    body: 'do the thing',
+    board: { key: 'widgets', scope: 'widgets' },
+  });
+  assert.match(prompt, /a previous attempt was reviewed and changes were requested/);
+  assert.match(prompt, /fix the thing/);
+});
+
+test('applyReviewOutcome: approve admits to the stack and resets round state', async (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '1', projectKey: 'widgets', kind: 'feature', title: 'T', status: 'in_progress',
+  });
+  const mirrored = [];
+  const commented = [];
+  const tracker = {
+    mirror: async (tkt, payload) => mirrored.push(payload),
+    comment: async (tkt, text) => commented.push(text),
+  };
+  const original = integration.admitTicket;
+  integration.admitTicket = async () => ({ status: 'deployed', compositeSha: 'stack-sha' });
+  try {
+    const result = await applyReviewOutcome({
+      config: { store }, store, tracker, board: { key: 'widgets' },
+      ticket: store.getById(ticket.id),
+      implemented: { cli: 'codex', model: '', commits: 'abc def', summary: 'SUMMARY: did it' },
+      branch: 'ai/x', modelLabel: 'codex', baseMirror: { branch: 'ai/x' },
+      rev: { verdict: 'approve', notes: 'LGTM', reviewer: { cli: 'claude', model: 'opus' } },
+      log: () => {},
+    });
+    assert.equal(result.status, 'approved');
+    assert.equal(mirrored[0].status, 'testing');
+    assert.equal(mirrored[0].reviewFeedback, '');
+    assert.match(commented[0], /Approved by claude \/ opus/);
+  } finally {
+    integration.admitTicket = original;
+  }
+});
+
+test('applyReviewOutcome: request_changes within budget requeues and durably records the finding', async (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '2', projectKey: 'widgets', kind: 'feature', title: 'T', status: 'in_progress',
+  });
+  const mirrored = [];
+  const tracker = { mirror: async (tkt, payload) => mirrored.push(payload), comment: async () => {} };
+  const result = await applyReviewOutcome({
+    config: { store, review: { maxRounds: 2 } }, store, tracker, board: { key: 'widgets' },
+    ticket: store.getById(ticket.id),
+    implemented: { cli: 'codex', model: '', commits: 'abc', summary: 'SUMMARY: did it' },
+    branch: 'ai/x', modelLabel: 'codex', baseMirror: { branch: 'ai/x' },
+    rev: { verdict: 'request_changes', notes: 'missing guard in reapply', reviewer: { cli: 'claude', model: '' } },
+    log: () => {},
+  });
+  assert.equal(result.status, 'changes_requested');
+  assert.equal(mirrored[0].status, 'queued');
+  assert.equal(mirrored[0].reviewFeedback, 'missing guard in reapply');
+  const stored = store.getById(ticket.id);
+  assert.equal(stored.reviewHistory.length, 1);
+  assert.equal(stored.reviewHistory[0].notes, 'missing guard in reapply');
+});
+
+test('applyReviewOutcome: past max rounds it parks for a human WITHOUT wiping reviewFeedback, and flags repeat bounces', async (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '3', projectKey: 'widgets', kind: 'feature', title: 'T', status: 'in_progress',
+  });
+  // Simulate two prior real do-overs (requeue_count = 2) so the cycle-note fires.
+  store.recordImplementation(ticket.id, { headSha: 'head1' });
+  store.transition(ticket.id, 'queued');
+  store.transition(ticket.id, 'in_progress');
+  store.transition(ticket.id, 'queued');
+  store.transition(ticket.id, 'in_progress');
+
+  const mirrored = [];
+  const commented = [];
+  const tracker = { mirror: async (tkt, payload) => mirrored.push(payload), comment: async (tkt, text) => commented.push(text) };
+  const stale = store.getById(ticket.id); // reviewRounds: 2 -> round 3 > maxRounds 2
+  const result = await applyReviewOutcome({
+    config: { store, review: { maxRounds: 2 } }, store, tracker, board: { key: 'widgets' },
+    ticket: { ...stale, reviewRounds: 2 },
+    implemented: { cli: 'codex', model: '', commits: 'abc', summary: 'SUMMARY: did it' },
+    branch: 'ai/x', modelLabel: 'codex', baseMirror: { branch: 'ai/x' },
+    rev: { verdict: 'request_changes', notes: 'still missing the guard', reviewer: { cli: 'claude', model: '' } },
+    log: () => {},
+  });
+  assert.equal(result.status, 'needs_human');
+  assert.equal(mirrored[0].status, 'in_review');
+  // The core fix: reviewFeedback must NOT be wiped to '' here.
+  assert.equal(mirrored[0].reviewFeedback, 'still missing the guard');
+  assert.match(commented[0], /Needs a human/);
+  assert.match(commented[0], /already bounced back to implementation 2 time\(s\)/);
+  const persisted = store.getById(ticket.id);
+  assert.equal(persisted.reviewHistory.length, 1);
+  assert.equal(persisted.reviewHistory[0].notes, 'still missing the guard');
 });
 
 test('runTicket bases dependent work on the deployed testing stack', async (t) => {

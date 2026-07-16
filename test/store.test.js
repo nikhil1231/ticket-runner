@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { openDb, closeDb } = require('../lib/db');
+const { openDb, closeDb, MIGRATIONS } = require('../lib/db');
 const { createStore, deriveShortId } = require('../lib/store');
 
 function fixture(t) {
@@ -169,6 +169,46 @@ test('worktree lifecycle records and clears git state', (t) => {
   assert.equal(t2.headSha, 'head1'); // history preserved
 });
 
+test('appendReviewNote accumulates findings without clobbering prior ones', (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'p' });
+  store.appendReviewNote(ticket.id, { round: 1, reviewer: 'codex', notes: 'missing guard in reapply' });
+  store.appendReviewNote(ticket.id, { round: 2, reviewer: 'claude', notes: 'never stamps on first set' });
+  const t2 = store.getById(ticket.id);
+  assert.equal(t2.reviewHistory.length, 2);
+  assert.equal(t2.reviewHistory[0].notes, 'missing guard in reapply');
+  assert.equal(t2.reviewHistory[1].notes, 'never stamps on first set');
+  assert.equal(t2.reviewHistory[1].reviewer, 'claude');
+  assert.ok(t2.reviewHistory[0].at);
+});
+
+test('requeue_count only increments for a real do-over (already implemented, leaving a non-queued status)', (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'p' });
+
+  // First claim (queued -> in_progress) is not a do-over.
+  store.transition(ticket.id, 'in_progress');
+  assert.equal(store.getById(ticket.id).requeueCount, 0);
+
+  // A failed attempt with no implementation yet (no head_sha) requeues but is
+  // not counted - nothing to lose memory of.
+  store.transition(ticket.id, 'queued');
+  assert.equal(store.getById(ticket.id).requeueCount, 0);
+
+  // Now it gets implemented, reviewed, and requested-changes: that IS a
+  // real do-over (there's an approved-ish head_sha the next attempt discards).
+  store.transition(ticket.id, 'in_progress');
+  store.recordImplementation(ticket.id, { headSha: 'head1' });
+  store.transition(ticket.id, 'queued');
+  assert.equal(store.getById(ticket.id).requeueCount, 1);
+
+  // Parked in_review (max rounds) then bounced back to queued again - counts.
+  store.transition(ticket.id, 'in_progress');
+  store.transition(ticket.id, 'in_review');
+  store.transition(ticket.id, 'queued');
+  assert.equal(store.getById(ticket.id).requeueCount, 2);
+});
+
 test('setMirrorState records hash and stops re-mirroring identical payloads', (t) => {
   const { store } = fixture(t);
   const ticket = seed(store, { trackerId: 'p' });
@@ -229,7 +269,7 @@ test('migrations are idempotent across reopen', (t) => {
   const db2 = openDb(baseDir);
   const store2 = createStore({ baseDir, db: db2 });
   assert.equal(store2.getByTrackerId('notion', 'persist').title, 'Persisted');
-  assert.equal(db2.prepare('PRAGMA user_version').get().user_version, 1);
+  assert.equal(db2.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
   closeDb(db2);
 });
 
