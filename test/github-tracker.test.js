@@ -238,6 +238,37 @@ test('pollCommands ignores stale board status shortly after a mirror write', asy
   assert.equal(commands.length, 0);
 });
 
+test('pollCommands requeues a Needs info ticket a human moved back to Not started', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(16, {
+    number: 16,
+    node_id: 'ISSUE_16',
+    title: 'Parked for a human',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started', // human edited the ticket and moved it back
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '16',
+    projectKey: 'widgets',
+    title: 'Parked for a human',
+    status: 'needs_info',
+    mirroredStatus: 'Needs info',
+  });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'requeue');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
 test('pollCommands does not requeue stack-blocked Needs info tickets from the board', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
