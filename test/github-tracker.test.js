@@ -435,6 +435,30 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
   assert.deepEqual(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
 });
 
+test('pollCommands skips a transient GitHub issue poll failure without advancing cursors', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const logs = [];
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  store.setKv('cursor:github:acme/widgets:issues:since', '2026-07-16T12:49:13Z');
+  transport.rest = async (method, apiPath) => {
+    if (method === 'GET' && /\/issues\?/.test(apiPath)) {
+      const error = new Error(`GitHub GET ${apiPath} -> 503: <html><title>Unicorn!</title></html>`);
+      error.status = 503;
+      throw error;
+    }
+    throw new Error(`unexpected REST ${method} ${apiPath}`);
+  };
+
+  const gh = tracker(transport, { log: (message) => logs.push(message) });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.deepEqual(commands, []);
+  assert.equal(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
+  assert.equal(store.getKv('cursor:github:acme/widgets:issues:since'), '2026-07-16T12:49:13Z');
+  assert.ok(logs.some((message) => message.includes('github issue poll failed transiently')));
+});
+
 test('pollCommands links GitHub issues that declare a parent issue', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
