@@ -136,6 +136,8 @@ test('dashboard /api/data surfaces human-wait dependency blockages transitively'
   store.addDependency(routine.id, inFlightDep.id);
   store.transition(blocker.id, 'in_progress');
   store.transition(blocker.id, 'needs_info', { reviewFeedback: 'Blocked on credentials' });
+  store.enqueueComment(blocker.id, 'Set up the OAuth app first');
+  store.enqueueComment(blocker.id, 'Waiting on the client secret to land in .env');
   store.transition(inFlightDep.id, 'in_progress');
   closeDb(db);
 
@@ -154,6 +156,7 @@ test('dashboard /api/data surfaces human-wait dependency blockages transitively'
   assert.equal(blockages.blockers[0].shortId, 'humanblock01');
   assert.equal(blockages.blockers[0].status, 'needs_info');
   assert.equal(blockages.blockers[0].note, 'Blocked on credentials');
+  assert.equal(blockages.blockers[0].lastComment, 'Waiting on the client secret to land in .env');
   assert.equal(blockages.blockers[0].url, 'https://github.com/acme/widgets/issues/1');
   assert.deepEqual(blockages.blockers[0].blocks.sort(), ['leaf00000001', 'middle000001']);
   // A dependency that is merely in progress is routine flow, not a blockage.
@@ -164,6 +167,37 @@ test('dashboard /api/data surfaces human-wait dependency blockages transitively'
   assert.equal(queuedFlags.leaf00000001, true);
   assert.equal(queuedFlags.routine00001, false);
   assert.equal(queuedFlags.free00000001, false);
+});
+
+test('dashboard /api/data lists needs_info tickets with the latest tracker comment', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  const parked = seed(store, { trackerId: 'issue-n0', shortId: 'parked000001', title: 'Ambiguous requirements' });
+  const commentless = seed(store, { trackerId: 'issue-n1', shortId: 'parked000002', title: 'Parked without comment' });
+  const healthy = seed(store, { trackerId: 'issue-n2', shortId: 'healthy00001', title: 'Just queued' });
+  store.transition(parked.id, 'in_progress');
+  store.transition(parked.id, 'needs_info');
+  store.enqueueComment(parked.id, 'Implemented (codex) - awaiting review.');
+  store.enqueueComment(parked.id, 'NEEDS_INFO: which currency should totals use?');
+  store.transition(commentless.id, 'in_progress');
+  store.transition(commentless.id, 'needs_info', { reviewFeedback: 'Reviewer wants a decision on schema shape' });
+  closeDb(db);
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const data = await requestJson(port, '/api/data');
+  assert.equal(data.status, 200);
+  const needsInfo = data.body.store.needsInfo;
+  assert.deepEqual(needsInfo.map((item) => item.shortId).sort(), ['parked000001', 'parked000002']);
+  const withComment = needsInfo.find((item) => item.shortId === 'parked000001');
+  // The newest outbox comment is the latest comment on the tracker issue.
+  assert.equal(withComment.lastComment, 'NEEDS_INFO: which currency should totals use?');
+  assert.equal(withComment.url, 'https://github.com/acme/widgets/issues/1');
+  const withFeedback = needsInfo.find((item) => item.shortId === 'parked000002');
+  assert.equal(withFeedback.lastComment, '');
+  assert.equal(withFeedback.note, 'Reviewer wants a decision on schema shape');
+  assert.equal(needsInfo.some((item) => item.shortId === 'healthy00001'), false);
 });
 
 test('dashboard exposes ticket details and restart action endpoints', async (t) => {

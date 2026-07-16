@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
+import { CircleHelp, LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
 import './styles.css';
 
 const STATUS_COLOR = {
@@ -320,6 +320,53 @@ function BlockageTag({ role }) {
   return <span className={`tag ${role === 'blocker' ? 'blocker-tag' : 'blocked-tag'}`}>{role}</span>;
 }
 
+// The human-readable reason a ticket is stuck: the runner always posts the
+// park reason as a tracker comment, so the newest outbox comment is the
+// latest comment on the issue; review feedback is the fallback.
+function IssueText({ item }) {
+  const text = item.lastComment || item.note;
+  if (!text) return null;
+  return <div className="issue-text">{text}</div>;
+}
+
+// Tickets parked in needs_info: the runner never retries these on its own, so
+// they sit alongside dependency blockages at the top. Tickets already shown
+// as blockers are skipped — they have a stronger card there already.
+function NeedsInfoPanel({ items = [], blockerIds, onOpen }) {
+  const list = items.filter((item) => !blockerIds?.has(item.shortId));
+  if (!list.length) return null;
+  return (
+    <>
+      <h2 className="needsinfo-h">Needs info</h2>
+      <div className="needsinfo-panel">
+        <div className="blockage-summary">
+          <CircleHelp size={16} className="needsinfo-icon" />
+          <span>
+            <b>{list.length}</b> ticket{list.length === 1 ? ' is' : 's are'} parked until a human answers or acts — the runner will not retry {list.length === 1 ? 'it' : 'them'} on its own.
+          </span>
+        </div>
+        <div className="needsinfo-list">
+          {list.map((item) => (
+            <div className="blockage-row needsinfo" key={item.shortId}>
+              <div className="rowline">
+                <span className="tag needsinfo-tag">needs info</span>
+                <TicketLink item={item} onOpen={onOpen} />
+              </div>
+              <div className="state-meta">
+                <span className="mono">{item.project}</span>
+                <span className="muted">{item.attempts} attempt{item.attempts === 1 ? '' : 's'}</span>
+                {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">tracker</a> : null}
+                <span className="muted nowrap">{ago(item.at)}</span>
+              </div>
+              <IssueText item={item} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Queued tickets the runner is silently skipping because a dependency chain
 // bottoms out at a ticket that needs a human. Rendered above everything else;
 // renders nothing when the pipeline is flowing.
@@ -354,7 +401,7 @@ function Blockages({ blockages, onOpen }) {
                   {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">tracker</a> : null}
                   <span className="muted nowrap">{ago(item.at)}</span>
                 </div>
-                {item.note ? <div className="muted blockage-note">{item.note}</div> : null}
+                <IssueText item={item} />
               </div>
             ))}
           </div>
@@ -959,6 +1006,7 @@ function App() {
   const runner = data.runner || {};
   const store = data.store || {};
   const dashboard = data.dashboard || {};
+  const blockerIds = new Set((store.blockages?.blockers || []).map((item) => item.shortId));
   const runnerDot = runner.state === 'live' ? 'var(--good)' : runner.state === 'stale' ? 'var(--warning)' : 'var(--muted)';
   const runnerText = runner.state === 'live' ? 'Runner live' : runner.state === 'stale' ? 'Runner stale' : 'Runner status unknown';
   const setPage = (nextView) => {
@@ -1005,6 +1053,7 @@ function App() {
             {!store.available ? <Empty error>Ticket store unavailable: {store.error}</Empty> : null}
 
             <Blockages blockages={store.blockages} onOpen={setTicketId} />
+            <NeedsInfoPanel items={store.needsInfo} blockerIds={blockerIds} onOpen={setTicketId} />
 
             <h2>Overview</h2>
             <div className="grid tiles">
@@ -1028,7 +1077,7 @@ function App() {
 
             <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
             <Connections connections={data.connections} />
-            <NeedsAttention items={store.attention} blockerIds={new Set((store.blockages?.blockers || []).map((b) => b.shortId))} onOpen={setTicketId} />
+            <NeedsAttention items={store.attention} blockerIds={blockerIds} onOpen={setTicketId} />
             <Completed items={store.completed} onOpen={setTicketId} />
             <Activity items={store.activity} onOpen={setTicketId} />
             <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
