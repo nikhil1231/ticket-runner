@@ -308,6 +308,10 @@ async function tick(config, { dryRun = false } = {}) {
   }
   const ticket = store.claimNext();
   if (!ticket) return;
+  // Make externally-visible state catch up before a long implementation run.
+  // Without this, the dashboard shows the local claim immediately, but GitHub
+  // can remain "Not started" until the run finishes and the next tick flushes.
+  await flushOutbox({ store, trackerFor, log });
   if (ticket.kind === 'incubator') {
     const board = findProject(config, ticket.projectKey || ticket.app);
     const tracker = incubatorTrackerFacade({ store, config, cache });
