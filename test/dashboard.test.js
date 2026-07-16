@@ -123,6 +123,49 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   if (codexProvider) assert.equal(codexProvider.tokens, 2500);
 });
 
+test('dashboard /api/data surfaces human-wait dependency blockages transitively', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  const blocker = seed(store, { trackerId: 'issue-b0', shortId: 'humanblock01', title: 'Needs a human decision' });
+  const middle = seed(store, { trackerId: 'issue-b1', shortId: 'middle000001', title: 'Waits on blocker' });
+  const leaf = seed(store, { trackerId: 'issue-b2', shortId: 'leaf00000001', title: 'Waits on middle' });
+  const inFlightDep = seed(store, { trackerId: 'issue-b3', shortId: 'working00001', title: 'Being worked' });
+  const routine = seed(store, { trackerId: 'issue-b4', shortId: 'routine00001', title: 'Waits on in-progress work' });
+  const free = seed(store, { trackerId: 'issue-b5', shortId: 'free00000001', title: 'Nothing blocking' });
+  store.addDependency(middle.id, blocker.id);
+  store.addDependency(leaf.id, middle.id);
+  store.addDependency(routine.id, inFlightDep.id);
+  store.transition(blocker.id, 'in_progress');
+  store.transition(blocker.id, 'needs_info', { reviewFeedback: 'Blocked on credentials' });
+  store.transition(inFlightDep.id, 'in_progress');
+  closeDb(db);
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const data = await requestJson(port, '/api/data');
+  assert.equal(data.status, 200);
+  const blockages = data.body.store.blockages;
+  // Direct and transitive dependents of the needs_info ticket are blocked...
+  assert.deepEqual(blockages.blocked.map((item) => item.shortId).sort(), ['leaf00000001', 'middle000001']);
+  assert.deepEqual(blockages.blocked[0].blockedBy, ['humanblock01']);
+  // ...and the human-wait root is the single blocker, credited with both.
+  assert.equal(blockages.blockers.length, 1);
+  assert.equal(blockages.blockers[0].shortId, 'humanblock01');
+  assert.equal(blockages.blockers[0].status, 'needs_info');
+  assert.equal(blockages.blockers[0].note, 'Blocked on credentials');
+  assert.equal(blockages.blockers[0].url, 'https://github.com/acme/widgets/issues/1');
+  assert.deepEqual(blockages.blockers[0].blocks.sort(), ['leaf00000001', 'middle000001']);
+  // A dependency that is merely in progress is routine flow, not a blockage.
+  assert.equal(blockages.blocked.some((item) => item.shortId === 'routine00001'), false);
+  // The queued list marks stalled tickets so "Up next" does not oversell them.
+  const queuedFlags = Object.fromEntries(data.body.store.current.queued.map((item) => [item.shortId, item.blocked]));
+  assert.equal(queuedFlags.middle000001, true);
+  assert.equal(queuedFlags.leaf00000001, true);
+  assert.equal(queuedFlags.routine00001, false);
+  assert.equal(queuedFlags.free00000001, false);
+});
+
 test('dashboard exposes ticket details and restart action endpoints', async (t) => {
   const { baseDir, db, store } = fixture(t);
   seed(store, { trackerId: 'issue-2', shortId: 'ticket000002', title: 'Clickable ticket' });

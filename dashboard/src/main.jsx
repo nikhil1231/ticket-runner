@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LayoutDashboard, RefreshCw, ScrollText, X } from 'lucide-react';
+import { LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
 import './styles.css';
 
 const STATUS_COLOR = {
@@ -314,6 +314,75 @@ function Connections({ connections = [] }) {
   );
 }
 
+// Reused wherever a ticket participates in a dependency stall: role="blocker"
+// is the ticket a human must act on, role="blocked" a ticket waiting behind it.
+function BlockageTag({ role }) {
+  return <span className={`tag ${role === 'blocker' ? 'blocker-tag' : 'blocked-tag'}`}>{role}</span>;
+}
+
+// Queued tickets the runner is silently skipping because a dependency chain
+// bottoms out at a ticket that needs a human. Rendered above everything else;
+// renders nothing when the pipeline is flowing.
+function Blockages({ blockages, onOpen }) {
+  const blocked = blockages?.blocked || [];
+  const blockers = blockages?.blockers || [];
+  if (!blocked.length || !blockers.length) return null;
+  return (
+    <>
+      <h2 className="blockage-h">Blockage</h2>
+      <div className="blockage-panel">
+        <div className="blockage-summary">
+          <OctagonAlert size={16} className="blockage-icon" />
+          <span>
+            <b>{blocked.length}</b> queued ticket{blocked.length === 1 ? ' is' : 's are'} stuck behind{' '}
+            <b>{blockers.length}</b> ticket{blockers.length === 1 ? '' : 's'} waiting on a human — the runner will not pick {blocked.length === 1 ? 'it' : 'them'} up until the blocker{blockers.length === 1 ? ' is' : 's are'} resolved.
+          </span>
+        </div>
+        <div className="blockage-cols">
+          <div>
+            <div className="blockage-col-title">Blockers — need human action</div>
+            {blockers.map((item) => (
+              <div className="blockage-row blocker" key={item.shortId}>
+                <div className="rowline">
+                  <BlockageTag role="blocker" />
+                  <TicketLink item={item} onOpen={onOpen} />
+                </div>
+                <div className="state-meta">
+                  <span className="mono">{item.project}</span>
+                  <StatusTag status={item.status} />
+                  <span className="chip warn">blocks {item.blocks.length}</span>
+                  {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">tracker</a> : null}
+                  <span className="muted nowrap">{ago(item.at)}</span>
+                </div>
+                {item.note ? <div className="muted blockage-note">{item.note}</div> : null}
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="blockage-col-title">Blocked — waiting in queue</div>
+            {blocked.map((item) => (
+              <div className="blockage-row blocked" key={item.shortId}>
+                <div className="rowline">
+                  <BlockageTag role="blocked" />
+                  <TicketLink item={item} onOpen={onOpen} />
+                </div>
+                <div className="state-meta">
+                  <span className="mono">{item.project}</span>
+                  <StatusTag status={item.status} />
+                  <span className="muted">waiting on</span>
+                  {item.blockedBy.map((shortId) => (
+                    <button className="linkbtn mono" type="button" key={shortId} onClick={() => onOpen(shortId)}>{shortId}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function MiniTicketList({ items = [], onOpen, empty }) {
   if (!items.length) return <div className="muted tiny-gap">{empty}</div>;
   return (
@@ -325,6 +394,7 @@ function MiniTicketList({ items = [], onOpen, empty }) {
             <div className="state-meta">
               <span className="mono">{item.project}</span>
               <StatusTag status={item.status} />
+              {item.blocked ? <BlockageTag role="blocked" /> : null}
               {item.agent ? <span className="mono">{item.agent}</span> : null}
             </div>
           </div>
@@ -515,7 +585,7 @@ function CurrentState({ data, onOpen }) {
   );
 }
 
-function NeedsAttention({ items = [], onOpen }) {
+function NeedsAttention({ items = [], blockerIds, onOpen }) {
   return (
     <>
       <h2>Needs attention</h2>
@@ -526,7 +596,7 @@ function NeedsAttention({ items = [], onOpen }) {
             <tbody>
               {items.map((item) => (
                 <tr key={item.shortId}>
-                  <td><TicketLink item={item} onOpen={onOpen} /></td>
+                  <td><TicketLink item={item} onOpen={onOpen} />{blockerIds?.has(item.shortId) ? <> <BlockageTag role="blocker" /></> : null}</td>
                   <td className="mono">{item.project}</td>
                   <td><StatusTag status={item.status} /></td>
                   <td className="num">{item.attempts}</td>
@@ -934,10 +1004,13 @@ function App() {
             {error ? <div className="note err">Last refresh failed: {error}</div> : null}
             {!store.available ? <Empty error>Ticket store unavailable: {store.error}</Empty> : null}
 
+            <Blockages blockages={store.blockages} onOpen={setTicketId} />
+
             <h2>Overview</h2>
             <div className="grid tiles">
               <Tile value={store.totals?.tickets || 0} label="Tickets total" />
               <Tile value={overview.active} label="Active in pipeline" />
+              <Tile value={store.blockages?.blocked?.length || 0} label="Blocked by dependency" color={store.blockages?.blocked?.length ? 'var(--critical)' : ''} />
               <Tile value={overview.byStatus.done || 0} label="Completed" />
               <Tile value={overview.byStatus.failed || 0} label="Failed" color={overview.byStatus.failed ? 'var(--critical)' : ''} />
               <Tile value={(overview.byStatus.needs_info || 0) + (overview.byStatus.in_review || 0)} label="Awaiting human" />
@@ -955,7 +1028,7 @@ function App() {
 
             <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
             <Connections connections={data.connections} />
-            <NeedsAttention items={store.attention} onOpen={setTicketId} />
+            <NeedsAttention items={store.attention} blockerIds={new Set((store.blockages?.blockers || []).map((b) => b.shortId))} onOpen={setTicketId} />
             <Completed items={store.completed} onOpen={setTicketId} />
             <Activity items={store.activity} onOpen={setTicketId} />
             <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
