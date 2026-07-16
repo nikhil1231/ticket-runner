@@ -12,6 +12,10 @@ function fakeGit({ head = 'aaa', target = 'bbb', dirty = '', diverged = false } 
     if (command === 'rev-parse HEAD') return head;
     if (command === 'rev-parse origin/main') return target;
     if (command === 'status --porcelain') return dirty;
+    if (command === 'checkout -- package-lock.json') {
+      dirty = dirty.split('\n').filter((line) => !line.endsWith('package-lock.json')).join('\n');
+      return '';
+    }
     if (command === 'merge-base --is-ancestor HEAD origin/main' && diverged) throw new Error('not ancestor');
     if (command === 'merge --ff-only --quiet origin/main') head = target;
     return command === 'rev-parse HEAD' ? head : '';
@@ -30,6 +34,21 @@ test('does nothing when already current', () => {
 test('does not overwrite local changes', () => {
   const fake = fakeGit({ dirty: ' M runner.js' });
   assert.equal(checkForUpdate({ repoPath: '/repo', git: fake.git }).reason, 'dirty');
+  assert.equal(fake.calls.some((call) => call.startsWith('merge ')), false);
+});
+
+test('restores an npm-rewritten package-lock.json and proceeds with the update', () => {
+  const fake = fakeGit({ dirty: ' M package-lock.json' });
+  assert.deepEqual(checkForUpdate({ repoPath: '/repo', git: fake.git }), {
+    updated: true, reason: 'fast-forward', headSha: 'bbb',
+  });
+  assert.equal(fake.calls.includes('checkout -- package-lock.json'), true);
+});
+
+test('a dirty package-lock.json alongside real local changes still blocks the update', () => {
+  const fake = fakeGit({ dirty: ' M package-lock.json\n M runner.js' });
+  assert.equal(checkForUpdate({ repoPath: '/repo', git: fake.git }).reason, 'dirty');
+  assert.equal(fake.calls.includes('checkout -- package-lock.json'), false);
   assert.equal(fake.calls.some((call) => call.startsWith('merge ')), false);
 });
 
@@ -77,12 +96,16 @@ test('reports dashboard build failures without undoing the update', () => {
 
 test('dashboard build bootstraps npm dependencies before building', () => {
   const calls = [];
+  const gitCalls = [];
   const result = buildDashboard('/repo', (_cmd, args, options) => {
     calls.push({ args, cwd: options.cwd });
-  });
+  }, (_repo, args) => gitCalls.push(args.join(' ')));
   assert.deepEqual(result, { ok: true });
   assert.deepEqual(calls, [
     { args: ['install', '--silent'], cwd: '/repo' },
     { args: ['run', 'dashboard:build', '--silent'], cwd: '/repo' },
   ]);
+  // npm install may rewrite lock metadata; the build must put it back so the
+  // checkout stays clean for the next auto-update.
+  assert.deepEqual(gitCalls, ['checkout -- package-lock.json']);
 });
