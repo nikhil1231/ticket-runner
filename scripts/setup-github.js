@@ -193,14 +193,32 @@ async function setup({ owner, repo, title, assignee = 'ticket-runner-bot' }) {
   };
 }
 
+// Projects V2 are created under the token's account (ensureProject uses the
+// viewer id), and GitHub only links same-owner projects to a repo. Running this
+// with e.g. a ticket-runner-bot token against a personal repo strands the board
+// under the bot: invisible to the repo owner's project search, unlinkable to
+// the repo, and un-transferable (user projects cannot change owners). Refuse
+// the mismatch unless explicitly overridden.
+function checkOwnerMatch(viewerLogin, owner, allowCrossOwner) {
+  if (allowCrossOwner || viewerLogin.toLowerCase() === owner.toLowerCase()) return;
+  throw new Error(
+    `GITHUB_TOKEN belongs to ${viewerLogin} but the repo owner is ${owner}; the project would be created under ` +
+    `${viewerLogin}, where it cannot be linked to the repo or found from ${owner}'s account. ` +
+    `Use a token owned by ${owner} (then invite the runner's account as a project collaborator), or pass --allow-cross-owner.`
+  );
+}
+
 async function main() {
   loadEnv();
   if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN is not set');
   github.setToken(process.env.GITHUB_TOKEN);
-  const owner = process.argv[2];
-  const repo = process.argv[3];
-  const title = process.argv.slice(4).join(' ');
-  if (!owner || !repo) throw new Error('usage: node scripts/setup-github.js <owner> <repo> [project title]');
+  const allowCrossOwner = process.argv.includes('--allow-cross-owner');
+  const args = process.argv.slice(2).filter((arg) => arg !== '--allow-cross-owner');
+  const [owner, repo] = args;
+  const title = args.slice(2).join(' ');
+  if (!owner || !repo) throw new Error('usage: node scripts/setup-github.js <owner> <repo> [project title] [--allow-cross-owner]');
+  const viewer = await github.graphql('query ViewerLogin { viewer { login } }', {});
+  checkOwnerMatch(viewer.viewer.login, owner, allowCrossOwner);
   const tracker = await setup({ owner, repo, title });
   console.log(JSON.stringify({ tracker }, null, 2));
   console.log(`\nFor Flywheel: create one issue labeled "mission", assign it to ${tracker.assignee}, and add it to the project board. Its body is the mission statement.`);
@@ -213,4 +231,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { setup, STATUS_OPTIONS, LABELS };
+module.exports = { setup, checkOwnerMatch, STATUS_OPTIONS, LABELS };
