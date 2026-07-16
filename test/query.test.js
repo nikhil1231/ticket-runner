@@ -110,7 +110,7 @@ test('query runner answers bracketed query tickets without creating implementati
       spawnEngine: async (args) => {
         assert.equal(args.worktreeDir, repoPath);
         assert.equal(args.config.adapters.codex.sandbox, 'read-only');
-        assert.equal(args.config.adapters.codex.sandboxOverride, 'read-only');
+        assert.equal(args.config.adapters.codex.sandboxOverride, undefined);
         assert.equal(args.cli, 'codex');
         return {
           code: 0,
