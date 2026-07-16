@@ -8,6 +8,7 @@ const path = require('path');
 const { openDb, closeDb } = require('../lib/db');
 const { createStore } = require('../lib/store');
 const { createGithubTracker, markdownAppend } = require('../lib/trackers/github');
+const { applyTrackerCommands } = require('../lib/cutover');
 
 function fixture(t) {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-gh-'));
@@ -401,6 +402,76 @@ test('pollCommands creates unknown issues and detects force deploy labels', asyn
   assert.ok(commands.some((command) => command.type === 'force_deploy' && command.ticket.id === existing.id));
   assert.ok(transport.calls.rest.some((call) => call.method === 'DELETE' && call.path.includes('/labels/force-deploy')));
   assert.deepEqual(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
+});
+
+test('pollCommands links GitHub issues that declare a parent issue', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const parent = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '10',
+    projectKey: 'widgets',
+    kind: 'epic',
+    title: 'Parent epic',
+    status: 'queued',
+  });
+  transport.issues.set(24, {
+    number: 24,
+    node_id: 'ISSUE_24',
+    title: 'Child ticket',
+    body: 'parent #10\n\nDo the thing.',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands[0].type, 'create');
+  assert.equal(commands[0].snapshot.parentTrackerId, '10');
+  applyTrackerCommands({ store, commands });
+  const child = store.getByTrackerId('github:acme/widgets', '24');
+  assert.equal(child.parentId, parent.id);
+});
+
+test('pollCommands repairs existing GitHub issue parent links from body text', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const parent = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '10',
+    projectKey: 'widgets',
+    kind: 'epic',
+    title: 'Parent epic',
+    status: 'queued',
+  });
+  const child = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '24',
+    projectKey: 'widgets',
+    title: 'Child ticket',
+    status: 'needs_info',
+  });
+  transport.issues.set(24, {
+    number: 24,
+    node_id: 'ISSUE_24',
+    title: 'Child ticket',
+    body: 'Parent: https://github.com/acme/widgets/issues/10',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Needs info',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-02T00:00:00Z',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  const link = commands.find((command) => command.type === 'link_parent');
+  assert.ok(link);
+  assert.equal(link.ticket.id, child.id);
+  applyTrackerCommands({ store, commands: [link] });
+  assert.equal(store.getById(child.id).parentId, parent.id);
 });
 
 test('pollCommands ignores issues outside the configured Project v2 project', async (t) => {
