@@ -164,7 +164,7 @@ test('a conflicting ticket is parked while compatible tickets still deploy', asy
 
   const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.deepEqual(result.tickets.map((item) => item.title), ['First']);
-  assert.equal(secondPage.properties.Status.status.name, 'In review');
+  assert.equal(secondPage.properties.Status.status.name, 'Needs info');
   assert.match(tracker.comments[0].message, /conflicted/i);
   assert.match(tracker.comments[0].message, /shared\.txt/);
 });
@@ -398,7 +398,7 @@ test('missing stack metadata parks the ticket instead of silently deploying it',
   const eas = { pushUpdate: () => ({ ok: true }) };
   const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
   assert.equal(result.status, 'deployed');
-  assert.equal(page.properties.Status.status.name, 'In review');
+  assert.equal(page.properties.Status.status.name, 'Needs info');
   assert.match(tracker.comments[0].message, /metadata is missing/i);
   assert.deepEqual(result.tickets, []);
 });

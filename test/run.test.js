@@ -137,7 +137,7 @@ test('applyReviewOutcome: request_changes within budget requeues and durably rec
   assert.equal(stored.reviewHistory[0].notes, 'missing guard in reapply');
 });
 
-test('applyReviewOutcome: past max rounds it parks for a human WITHOUT wiping reviewFeedback, and flags repeat bounces', async (t) => {
+test('applyReviewOutcome: past max rounds it parks in Needs info WITHOUT wiping reviewFeedback, and flags repeat bounces', async (t) => {
   const { store } = fixture(t);
   const ticket = store.upsertFromTracker({
     tracker: 'github:acme/widgets', trackerId: '3', projectKey: 'widgets', kind: 'feature', title: 'T', status: 'in_progress',
@@ -161,11 +161,11 @@ test('applyReviewOutcome: past max rounds it parks for a human WITHOUT wiping re
     rev: { verdict: 'request_changes', notes: 'still missing the guard', reviewer: { cli: 'claude', model: '' } },
     log: () => {},
   });
-  assert.equal(result.status, 'needs_human');
-  assert.equal(mirrored[0].status, 'in_review');
+  assert.equal(result.status, 'needs_info');
+  assert.equal(mirrored[0].status, 'needs_info');
   // The core fix: reviewFeedback must NOT be wiped to '' here.
   assert.equal(mirrored[0].reviewFeedback, 'still missing the guard');
-  assert.match(commented[0], /Needs a human/);
+  assert.match(commented[0], /Needs info/);
   assert.match(commented[0], /already bounced back to implementation 2 time\(s\)/);
   const persisted = store.getById(ticket.id);
   assert.equal(persisted.reviewHistory.length, 1);

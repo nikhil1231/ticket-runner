@@ -222,7 +222,7 @@ async function processStoreActions(config, store, actions, cache) {
   for (const ticket of promotions) {
     const board = findProject(config, ticket.projectKey);
     if (!board) {
-      store.transition(ticket.id, 'in_review');
+      store.transition(ticket.id, 'needs_info');
       store.enqueueComment(ticket.id, `Automatic merge cannot start because project "${ticket.projectKey}" is not configured.`);
       continue;
     }

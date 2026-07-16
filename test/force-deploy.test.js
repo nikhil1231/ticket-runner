@@ -40,7 +40,7 @@ test('a human override is one-shot and moves a successful push to Testing', asyn
   assert.match(comments[0], /cumulative Testing stack/);
 });
 
-test('a failed push remains parked and requires another explicit checkbox tick', async (t) => {
+test('a failed push parks in Needs info and requires another explicit checkbox tick', async (t) => {
   const f = fixture();
   t.after(() => fs.rmSync(f.baseDir, { recursive: true, force: true }));
   const updates = [];
@@ -54,8 +54,27 @@ test('a failed push remains parked and requires another explicit checkbox tick',
   const result = await forceDeploy({ ...f, config: { baseDir: f.baseDir }, tracker, integration, log: () => {} });
 
   assert.equal(result.status, 'failed');
-  assert.equal(updates.length, 1);
   assert.deepEqual(updates[0], { forceDeploy: false });
-  assert.match(comments[0], /remains In review/);
+  assert.equal(updates[1].status, 'needs_info');
+  assert.match(comments[0], /needs human intervention/);
   assert.match(comments[0], /EAS rejected update/);
+});
+
+test('a force deploy with missing metadata parks in Needs info', async (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.baseDir, { recursive: true, force: true }));
+  fs.unlinkSync(path.join(f.baseDir, 'worktrees', 'abc123.json'));
+  const updates = [];
+  const comments = [];
+  const tracker = {
+    mirror: async (_ticket, payload) => updates.push(payload),
+    comment: async (_ticket, comment) => comments.push(comment),
+  };
+
+  const result = await forceDeploy({ ...f, config: { baseDir: f.baseDir }, tracker, log: () => {} });
+
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(updates[0], { forceDeploy: false });
+  assert.equal(updates[1].status, 'needs_info');
+  assert.match(comments[0], /metadata/i);
 });
