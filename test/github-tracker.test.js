@@ -459,6 +459,39 @@ test('pollCommands skips a transient GitHub issue poll failure without advancing
   assert.ok(logs.some((message) => message.includes('github issue poll failed transiently')));
 });
 
+test('pollCommands skips a transient GitHub project lookup failure without advancing cursors', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const logs = [];
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  store.setKv('cursor:github:acme/widgets:issues:since', '2026-07-16T12:49:13Z');
+  transport.issues.set(25, {
+    number: 25,
+    node_id: 'ISSUE_25',
+    title: 'New issue during outage',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    created_at: '2026-07-16T12:50:00Z',
+    updated_at: '2026-07-16T12:50:00Z',
+  });
+  transport.graphql = async (query) => {
+    if (/ProjectItems/.test(query)) {
+      throw new Error('GitHub GraphQL errors: [{"message":"Something went wrong while executing your query on 2026-07-16T23:55:11Z. Please include `DAD6:1FE678:EE39D9:10AC68D:6A596F5F` when reporting this issue."}]');
+    }
+    throw new Error(`unexpected GraphQL ${query}`);
+  };
+
+  const gh = tracker(transport, { log: (message) => logs.push(message) });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.deepEqual(commands, []);
+  assert.equal(store.getKv('cursor:github:acme/widgets:issues:etag'), 'etag-1');
+  assert.equal(store.getKv('cursor:github:acme/widgets:issues:since'), '2026-07-16T12:49:13Z');
+  assert.ok(logs.some((message) => message.includes('github project lookup failed transiently')));
+});
+
 test('pollCommands links GitHub issues that declare a parent issue', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
