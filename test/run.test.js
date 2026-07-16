@@ -244,3 +244,83 @@ test('runTicket bases dependent work on the deployed testing stack', async (t) =
     Object.assign(worktrees, original);
   }
 });
+
+test('runTicket bases same-epic sibling work on the deployed testing stack', async (t) => {
+  const { baseDir, store } = fixture(t);
+  const repoPath = path.join(baseDir, 'repo');
+  fs.mkdirSync(repoPath);
+  const epic = store.createLocalTicket({
+    projectKey: 'widgets',
+    kind: 'epic',
+    title: 'Epic',
+    status: 'queued',
+    tracker: 'github:acme/widgets',
+  });
+  const sibling = store.createLocalTicket({
+    projectKey: 'widgets',
+    kind: 'feature',
+    title: 'Sibling already testing',
+    parentId: epic.id,
+    status: 'testing',
+    tracker: 'github:acme/widgets',
+  });
+  const ticket = store.createLocalTicket({
+    projectKey: 'widgets',
+    kind: 'feature',
+    title: 'Next sibling',
+    body: 'Implement this after the sibling stack.',
+    parentId: epic.id,
+    status: 'queued',
+    tracker: 'github:acme/widgets',
+  });
+  store.saveStack('widgets', {
+    status: 'deployed',
+    baseSha: 'main-sha',
+    compositeSha: 'stack-sha',
+    tickets: [{ shortId: sibling.shortId, headSha: 'head-sha' }],
+  });
+
+  const original = {
+    fetchBranch: worktrees.fetchBranch,
+    createWorktree: worktrees.createWorktree,
+    head: worktrees.head,
+  };
+  const seen = {};
+  worktrees.fetchBranch = () => 'main-sha';
+  worktrees.createWorktree = (args) => {
+    Object.assign(seen, args);
+    return { dir: path.join(baseDir, 'wt'), branch: 'ai/next-sibling', baseSha: args.baseRef };
+  };
+  worktrees.head = () => 'stack-sha';
+
+  const tracker = {
+    mirror: async () => {},
+    comment: async () => {},
+    fetchBody: async () => 'Implement this after the sibling stack.',
+    fetchComments: async () => [],
+  };
+
+  try {
+    const result = await runTicket({
+      config: {
+        baseDir,
+        repoPath,
+        runTimeoutMs: 1000,
+        maxAttempts: 2,
+        fallbackPolicies: { feature: [] },
+        adapters: {},
+        selfHealing: { enabled: false, maxRescuePasses: 0 },
+        store,
+      },
+      board: { key: 'widgets', scope: 'widgets', integration: { enabled: true, remote: 'origin', mainBranch: 'main' } },
+      ticket: store.getById(ticket.id),
+      log: () => {},
+      services: { tracker, store, runSetup: () => {} },
+    });
+
+    assert.equal(seen.baseRef, 'stack-sha');
+    assert.equal(result.status, 'failed');
+  } finally {
+    Object.assign(worktrees, original);
+  }
+});

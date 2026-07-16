@@ -9,6 +9,8 @@ const path = require('path');
 const integration = require('../lib/integration');
 const ticketState = require('../lib/ticket-state');
 const state = require('../lib/healing-state');
+const { openDb, closeDb } = require('../lib/db');
+const { createStore } = require('../lib/store');
 
 function git(dir, args) {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -120,6 +122,20 @@ function trackerFixture(pages) {
 
 const services = { runSetup: () => {}, runValidation: () => {} };
 
+function storeTracker(store, { mirrorTransitions = true } = {}) {
+  const updates = [];
+  const comments = [];
+  return {
+    updates,
+    comments,
+    mirror: async (ticket, payload) => {
+      updates.push({ ticket, payload });
+      if (mirrorTransitions && payload.status) store.transition(ticket.id, payload.status);
+    },
+    comment: async (ticket, message) => comments.push({ ticket, message }),
+  };
+}
+
 test('cumulative stack is oldest-first and rebuilds after tickets leave Testing', async (t) => {
   const f = fixture(t);
   const newer = makePage('00000000-0000-0000-0000-000000000002', 'Newer', '2026-01-02T00:00:00Z');
@@ -167,6 +183,79 @@ test('a conflicting ticket is parked while compatible tickets still deploy', asy
   assert.equal(secondPage.properties.Status.status.name, 'Needs info');
   assert.match(tracker.comments[0].message, /conflicted/i);
   assert.match(tracker.comments[0].message, /shared\.txt/);
+});
+
+test('a merge failure without unmerged files is parked without blocking the stack', async (t) => {
+  const f = fixture(t);
+  const page = makePage('00000000-0000-0000-0000-000000000014', 'Unrelated history', '2026-01-01T00:00:00Z');
+  const shortId = page.id.replace(/-/g, '').slice(-12);
+  const branch = `ai/${shortId}`;
+  git(f.repoPath, ['switch', '--orphan', branch]);
+  try { git(f.repoPath, ['rm', '-rf', '.']); } catch {}
+  fs.writeFileSync(path.join(f.repoPath, 'orphan.txt'), 'orphan\n');
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', `${shortId}: unrelated`]);
+  const headSha = git(f.repoPath, ['rev-parse', 'HEAD']);
+  git(f.repoPath, ['switch', 'main']);
+  ticketState.writeMeta(f.baseDir, shortId, {
+    pageId: page.id,
+    shortId,
+    app: f.board.app,
+    branch,
+    dir: path.join(f.baseDir, 'worktrees', shortId),
+    title: page.properties.Name.title[0].plain_text,
+    createdTime: page.created_time,
+    baseSha: git(f.repoPath, ['rev-parse', 'main']),
+    headSha,
+    changedFiles: ['orphan.txt'],
+    nativeSensitiveFiles: [],
+  });
+  const tracker = trackerFixture([page]);
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  const result = await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
+
+  assert.equal(result.status, 'deployed');
+  assert.deepEqual(result.tickets, []);
+  assert.equal(page.properties.Status.status.name, 'Needs info');
+  assert.match(tracker.comments[0].message, /Git error:/);
+});
+
+test('repeated stack conflicts share one repair fingerprint', async (t) => {
+  const f = fixture(t);
+  const db = openDb(':memory:');
+  t.after(() => closeDb(db));
+  const store = createStore({ baseDir: f.baseDir, db });
+  f.config.store = store;
+  fs.writeFileSync(path.join(f.repoPath, 'shared.txt'), 'start\n');
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', 'shared base']);
+  git(f.repoPath, ['push', 'origin', 'main']);
+  const firstPage = makePage('00000000-0000-0000-0000-000000000015', 'First', '2026-01-01T00:00:00Z');
+  const secondPage = makePage('00000000-0000-0000-0000-000000000016', 'Second', '2026-01-02T00:00:00Z');
+  const firstRef = addTicket(f, firstPage, 'shared.txt', 'first\n');
+  const secondRef = addTicket(f, secondPage, 'shared.txt', 'second\n');
+  const first = store.upsertFromTracker({
+    tracker: 'github:acme/caligo', trackerId: firstPage.id, projectKey: f.board.app, kind: 'feature',
+    title: 'First', status: 'testing', createdAt: firstPage.created_time,
+  });
+  const second = store.upsertFromTracker({
+    tracker: 'github:acme/caligo', trackerId: secondPage.id, projectKey: f.board.app, kind: 'feature',
+    title: 'Second', status: 'testing', createdAt: secondPage.created_time,
+  });
+  store.recordImplementation(first.id, { headSha: firstRef.headSha, changedFiles: ['shared.txt'] });
+  store.recordImplementation(second.id, { headSha: secondRef.headSha, changedFiles: ['shared.txt'] });
+  const tracker = storeTracker(store, { mirrorTransitions: false });
+  const eas = { pushUpdate: () => ({ ok: true }) };
+
+  await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
+  await integration.reconcileBoard({ ...f, tracker, eas, services, log: () => {} });
+
+  const rows = store.db.prepare('SELECT count, last_status AS lastStatus, meta FROM repairs').all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].count, 2);
+  assert.equal(rows[0].lastStatus, 'stack_conflict');
+  assert.match(tracker.comments.at(-1).message, /seen 2 times/);
 });
 
 test('reconciliation replaces an existing generated integration branch worktree', async (t) => {
