@@ -160,7 +160,7 @@ async function pollIncubatorCommands(config, store, cache) {
 }
 
 async function pollAndApplyCommands(config, store, cache) {
-  const combined = { promotions: [], forceDeploys: [], incubatorApprovals: [] };
+  const combined = { promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [] };
   for (const board of config.projects) {
     const tracker = realProjectTracker(board, cache);
     if (!tracker.pollCommands) continue;
@@ -168,6 +168,7 @@ async function pollAndApplyCommands(config, store, cache) {
     const actions = applyTrackerCommands({ store, commands, log });
     combined.promotions.push(...actions.promotions);
     combined.forceDeploys.push(...actions.forceDeploys);
+    combined.epicMerges.push(...actions.epicMerges);
   }
   const incubatorActions = applyTrackerCommands({ store, commands: await pollIncubatorCommands(config, store, cache), log });
   combined.incubatorApprovals.push(...incubatorActions.incubatorApprovals);
@@ -215,9 +216,23 @@ async function recoverStaleClaims(config, store = null) {
 }
 
 async function processStoreActions(config, store, actions, cache) {
-  const promotions = actions.promotions
+  // Moving an epic to Done is shorthand for "merge every ticket under this epic
+  // to main." Expand each epic-level merge into a promotion of each ticket still
+  // in Testing under it, then close the epic once its tickets are merged.
+  const epicMerges = (actions.epicMerges || [])
+    .map((ref) => store.getById(ref.id))
+    .filter((epic) => epic && epic.status !== 'done');
+  const cascadeChildren = [];
+  for (const epic of epicMerges) {
+    for (const child of store.childrenOf(epic.id)) {
+      if (child.status === 'testing') cascadeChildren.push(child);
+    }
+  }
+
+  const seen = new Set();
+  const promotions = [...actions.promotions, ...cascadeChildren]
     .map((ticket) => store.getById(ticket.id))
-    .filter(Boolean)
+    .filter((ticket) => ticket && !seen.has(ticket.id) && seen.add(ticket.id))
     .sort((a, b) => a.createdTime.localeCompare(b.createdTime));
   for (const ticket of promotions) {
     const board = findProject(config, ticket.projectKey);
@@ -232,6 +247,25 @@ async function processStoreActions(config, store, actions, cache) {
       log(`main advanced while promoting "${ticket.title}"; retrying next tick`);
       return { status: 'blocked', reason: 'remote_advanced' };
     }
+  }
+
+  // Every Testing ticket under these epics has now been through promoteTicket;
+  // close each epic whose cascade finished. Any child that was not in Testing
+  // (still being worked, or parked by a failed merge) is left for the human to
+  // merge individually, and called out on the epic.
+  for (const epicRef of epicMerges) {
+    const epic = store.getById(epicRef.id);
+    if (!epic || epic.status === 'done') continue;
+    const children = store.childrenOf(epic.id);
+    const mergedCount = children.filter((child) => child.status === 'done').length;
+    const stragglers = children.filter((child) => !['done', 'cancelled'].includes(child.status));
+    store.transition(epic.id, 'done');
+    let note = `Epic marked Done. Merged ${mergedCount} ticket(s) to main.`;
+    if (stragglers.length) {
+      note += ` ${stragglers.length} ticket(s) were not in Testing yet and were left for you to merge individually: ${stragglers.map((child) => `"${child.title}"`).join(', ')}.`;
+    }
+    store.enqueueComment(epic.id, note);
+    if (epic.parentId) store.enqueueComment(epic.parentId, `Epic "${epic.title}" is done (${mergedCount} ticket(s) merged).`);
   }
 
   for (const ticketRef of actions.forceDeploys) {
@@ -631,7 +665,13 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only run the CLI when invoked directly (node runner.js ...). Requiring the
+// module (tests) just exposes the internals below without kicking off a poll.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+module.exports = { processStoreActions, pollAndApplyCommands, trackerCache };

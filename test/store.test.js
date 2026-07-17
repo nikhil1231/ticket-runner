@@ -76,11 +76,16 @@ test('claimNext respects projectKey filter', (t) => {
 test('transition table rejects illegal moves and allows self-transitions', (t) => {
   const { store } = fixture(t);
   const ticket = seed(store, { trackerId: 'p' });
-  // queued -> done is legal (used to auto-complete epics once all children are
-  // done/cancelled) but queued -> testing is still not a direct path.
+  // queued -> done is legal (used to complete epics whose tickets are all
+  // terminal) but queued -> testing is still not a direct path.
   assert.throws(() => store.transition(ticket.id, 'testing'), /illegal transition queued -> testing/);
   store.transition(ticket.id, 'in_progress');
-  assert.throws(() => store.transition(ticket.id, 'done'), /illegal transition in_progress -> done/);
+  // in_progress -> done is legal (an epic finished with every ticket already
+  // merged/cancelled); needs_info -> testing is not.
+  store.transition(ticket.id, 'needs_info');
+  assert.throws(() => store.transition(ticket.id, 'testing'), /illegal transition needs_info -> testing/);
+  store.transition(ticket.id, 'queued');
+  store.transition(ticket.id, 'in_progress');
   store.transition(ticket.id, 'testing');
   const done = store.transition(ticket.id, 'done');
   assert.ok(done.closedAt);
@@ -90,6 +95,16 @@ test('transition table rejects illegal moves and allows self-transitions', (t) =
   assert.equal(reopened.closedAt, null);
   // self-transition is a no-op-ish requeue, still legal
   assert.doesNotThrow(() => store.transition(ticket.id, 'queued'));
+});
+
+test('epic lifecycle transitions are legal: approve -> in_progress, freeze -> testing, resume, cascade done', (t) => {
+  const { store } = fixture(t);
+  const epic = seed(store, { trackerId: 'e', kind: 'epic', status: 'in_review' });
+  assert.doesNotThrow(() => store.transition(epic.id, 'in_progress')); // flywheel promotes an approved epic
+  assert.doesNotThrow(() => store.transition(epic.id, 'testing'));     // frozen for sign-off
+  assert.doesNotThrow(() => store.transition(epic.id, 'in_progress')); // human resumes to add more tickets
+  assert.doesNotThrow(() => store.transition(epic.id, 'testing'));
+  assert.equal(store.transition(epic.id, 'done').status, 'done');      // human moves epic to Done -> cascade
 });
 
 test('ready query honors dependency chains', (t) => {

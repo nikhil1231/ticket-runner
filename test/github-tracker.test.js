@@ -328,6 +328,78 @@ test('pollCommands does not requeue a Testing ticket from a stale Not started bo
   assert.equal(commands.length, 0);
 });
 
+test('pollCommands emits authorize_epic_merge when a human moves an epic Testing -> Done', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(20, {
+    number: 20,
+    node_id: 'ISSUE_20',
+    title: 'Signed-off epic',
+    body: 'Brief',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Done',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '20', projectKey: 'widgets', kind: 'epic', title: 'Signed-off epic', status: 'testing', mirroredStatus: 'Testing' });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'authorize_epic_merge');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands emits resume_epic when a human moves an epic Testing -> In progress', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(21, {
+    number: 21,
+    node_id: 'ISSUE_21',
+    title: 'Reopened epic',
+    body: 'Brief',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'In progress',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '21', projectKey: 'widgets', kind: 'epic', title: 'Reopened epic', status: 'testing', mirroredStatus: 'Testing' });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'resume_epic');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands still emits a plain authorize_merge for a feature moved Testing -> Done', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(22, {
+    number: 22,
+    node_id: 'ISSUE_22',
+    title: 'A feature',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Done',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '22', projectKey: 'widgets', kind: 'feature', title: 'A feature', status: 'testing', mirroredStatus: 'Testing' });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'authorize_merge');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
 test('pollCommands does not requeue a Failed ticket from a stale Not started board status', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();

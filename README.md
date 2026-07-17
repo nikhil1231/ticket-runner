@@ -107,13 +107,24 @@ approving epics.
 3. The runner decomposes the mission into **epics** (`kind = epic`), parked in
    **In review** for a one-time human approval. Move an epic to **Not started**
    to approve it, or **Cancelled** to reject it; rejected epics are never
-   re-proposed.
-4. Once an epic is approved, the runner tops up the project's queued backlog
+   re-proposed. The runner promotes an approved epic to **In progress** as soon
+   as it starts working it: a mission or epic being actively worked lives in
+   **In progress**, not parked in Not started (which is only the queue the runner
+   pulls unstarted tickets from).
+4. Once an epic is in progress, the runner tops up the project's queued backlog
    from that epic whenever it drops below `backlogThreshold`, generating
    grounded, decision-complete feature tickets that flow through the normal
-   implementation loop. An epic auto-completes to **Done** once all of its
-   tickets are done or cancelled (with at least one done), or earlier if the
-   planner reports the epic's scope is already fully delivered.
+   implementation loop.
+5. When the epic's scope is fully delivered — the planner reports there is
+   nothing left to add, or every ticket has reached the Testing stack — the
+   runner moves the **epic** to **Testing** and stops proposing tickets for it
+   (so it never flip-flops between "done" and "here are three more"). Then:
+   - Move the epic to **Done** to merge *every* ticket under it to the project's
+     main branch at once, exactly as if you had moved each ticket to Done.
+   - Move the epic back to **In progress** to have the runner resume adding
+     tickets to it.
+   An epic whose tickets were all merged (or cancelled) individually closes to
+   **Done** on its own, with nothing left to cascade.
 
 ### One-shot vs. continuous missions
 

@@ -441,16 +441,58 @@ test('EPIC_COMPLETE with no open children closes the epic and rotates', async (t
   assert.ok(epicComments.some((op) => /marked this epic complete/.test(op.payload.text)));
 });
 
-test('EPIC_COMPLETE with an open child keeps the epic open and waits for it to drain', async (t) => {
+test('EPIC_COMPLETE with tickets still in flight freezes the epic in Testing and stops re-asking', async (t) => {
   const { store, baseDir } = fixture(t);
   const mission = seedMission(store);
   const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Draining epic', parentId: mission.id, status: 'queued', tracker: 'github:acme/caligo' });
-  store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Last ticket still building', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  const child = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Last ticket in testing', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  store.transition(child.id, 'in_progress');
+  store.transition(child.id, 'testing');
   markMissionHashCurrent(store, mission);
+  store.setKv('flywheel:cooldown:caligo', new Date(0).toISOString()); // already elapsed
 
   const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: nothing more to add' }]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
-  assert.equal(result.status, 'epic_draining');
-  assert.equal(store.getById(epic.id).status, 'queued'); // stays open until the child finishes
-  assert.ok(store.getKv('flywheel:cooldown:caligo', null)); // draining sets a cooldown
+  assert.equal(result.status, 'epic_testing');
+  assert.equal(store.getById(epic.id).status, 'testing'); // frozen for human sign-off
+  // Freezing is forward progress: the cooldown is cleared so the next epic starts.
+  assert.equal(store.getKv('flywheel:cooldown:caligo', null), null);
+  const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
+  assert.ok(epicComments.some((op) => /no more tickets to add/.test(op.payload.text)));
+
+  // A follow-up pass must NOT invoke the planner again while the epic sits in Testing.
+  const spawnEngine2 = scriptedSpawnEngine([]);
+  const result2 = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
+  assert.equal(spawnEngine2.calls.length, 0);
+  assert.notEqual(result2.status, 'epic_testing');
+});
+
+test('an approved epic is promoted from Not started to In progress when the flywheel starts it', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Approved epic', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  store.transition(epic.id, 'queued'); // human approval: In review -> Not started
+  markMissionHashCurrent(store, mission);
+
+  const spawnEngine = scriptedSpawnEngine([{ lastMessage: ticketsMessage('tickets', [{ title: 'First ticket', body: 'x'.repeat(60) }]) }]);
+  await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(store.getById(epic.id).status, 'in_progress');
+  assert.equal(store.getById(mission.id).status, 'in_progress'); // an actively-worked mission moves to In progress too
+});
+
+test('reconcileEpics parks an in-progress epic in Testing once every ticket reaches the testing branch', (t) => {
+  const { store } = fixture(t);
+  const mission = seedMission(store);
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Ready epic', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  store.transition(epic.id, 'in_progress');
+  const child1 = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'A', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  const child2 = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'B', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  store.transition(child1.id, 'in_progress');
+  store.transition(child1.id, 'testing');
+  store.transition(child2.id, 'cancelled');
+
+  reconcileEpics({ store, board: board() });
+  assert.equal(store.getById(epic.id).status, 'testing'); // not done: awaits human sign-off to cascade-merge
+  const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
+  assert.ok(epicComments.some((op) => /in the testing branch/.test(op.payload.text)));
 });
