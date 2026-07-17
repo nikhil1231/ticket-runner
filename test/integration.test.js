@@ -258,6 +258,38 @@ test('repeated stack conflicts share one repair fingerprint', async (t) => {
   assert.match(tracker.comments.at(-1).message, /seen 2 times/);
 });
 
+test('an epic parked in Testing is excluded from the stack, not parked for missing metadata', async (t) => {
+  const f = fixture(t);
+  const db = openDb(':memory:');
+  t.after(() => closeDb(db));
+  const store = createStore({ baseDir: f.baseDir, db });
+  f.config.store = store;
+
+  // One implemented feature ticket in Testing (real branch/commit metadata).
+  const page = makePage('00000000-0000-0000-0000-000000000018', 'Feature', '2026-01-01T00:00:00Z');
+  const ref = addTicket(f, page, 'shared.txt', 'feature\n');
+  const feature = store.upsertFromTracker({
+    tracker: 'github:acme/caligo', trackerId: page.id, projectKey: f.board.app, kind: 'feature',
+    title: 'Feature', status: 'testing', createdAt: page.created_time,
+  });
+  store.recordImplementation(feature.id, { headSha: ref.headSha, changedFiles: ['shared.txt'] });
+
+  // An epic frozen in Testing for sign-off: a planning artifact with no branch.
+  const epic = store.upsertFromTracker({
+    tracker: 'github:acme/caligo', trackerId: 'epic-1', projectKey: f.board.app, kind: 'epic',
+    title: 'Signed-off epic', status: 'testing', createdAt: '2026-01-01T00:00:00Z',
+  });
+
+  const readTracker = storeTracker(store, { mirrorTransitions: false });
+  const status = await integration.stackStatus({ ...f, tracker: readTracker });
+  assert.deepEqual(status.desired.map((entry) => entry.shortId), [feature.shortId]); // epic excluded
+
+  const tracker = storeTracker(store, { mirrorTransitions: true });
+  await integration.reconcileBoard({ ...f, tracker, eas: { pushUpdate: () => ({ ok: true }) }, services, log: () => {} });
+  assert.equal(store.getById(epic.id).status, 'testing'); // never parked to Needs info
+  assert.ok(!tracker.comments.some((c) => /testing stack because its branch metadata/.test(c.message)));
+});
+
 test('reconciliation replaces an existing generated integration branch worktree', async (t) => {
   const f = fixture(t);
   const staleDir = path.join(f.baseDir, 'worktrees', 'caligo', 'stale-integration-caligo');
