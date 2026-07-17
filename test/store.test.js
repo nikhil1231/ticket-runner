@@ -49,6 +49,23 @@ test('shortId uses provided value or derives a stable one', (t) => {
   assert.equal(derived.shortId, deriveShortId('notion', 'p3'));
 });
 
+test('upsertFromTracker falls back when provided shortId collides', (t) => {
+  const { store } = fixture(t);
+  const original = seed(store, {
+    tracker: 'github:nikhil1231/caligo-app',
+    trackerId: '1',
+    shortId: 'work00000001',
+  });
+  const collided = seed(store, {
+    tracker: 'github:nikhil1231/workout-tracker',
+    trackerId: '1',
+    shortId: 'work00000001',
+  });
+  assert.equal(original.shortId, 'work00000001');
+  assert.equal(collided.shortId, deriveShortId('github:nikhil1231/workout-tracker', '1'));
+  assert.equal(store.stats().tickets, 2);
+});
+
 test('claimNext is atomic: two claims return different tickets, oldest first', (t) => {
   const { store } = fixture(t);
   seed(store, { trackerId: 'newer', title: 'Newer', createdAt: '2026-01-02T00:00:00Z' });
