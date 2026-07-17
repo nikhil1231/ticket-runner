@@ -257,7 +257,9 @@ remains manual in v1.
 ## Engines
 
 - **codex** (`codex exec`): sandboxed by default; the runner commits changes.
-- **antigravity** (`agy --print`): uses `.agent-task.md`; the runner owns commits.
+- **antigravity** (`agy --print`): reads its task from `.agent-task.md`, with the
+  worktree pinned as the workspace via `--add-dir` (agy 1.1.3+ ignores the bare
+  CWD); the runner owns commits.
 - **claude** (`claude -p`): headless Claude Code, primarily used for Flywheel
   planning. Install and log in to the `claude` CLI on the runner machine.
   Planning callers force `--permission-mode plan` and disallow file-editing
