@@ -216,23 +216,11 @@ async function recoverStaleClaims(config, store = null) {
 }
 
 async function processStoreActions(config, store, actions, cache) {
-  // Moving an epic to Done is shorthand for "merge every ticket under this epic
-  // to main." Expand each epic-level merge into a promotion of each ticket still
-  // in Testing under it, then close the epic once its tickets are merged.
-  const epicMerges = (actions.epicMerges || [])
-    .map((ref) => store.getById(ref.id))
-    .filter((epic) => epic && epic.status !== 'done');
-  const cascadeChildren = [];
-  for (const epic of epicMerges) {
-    for (const child of store.childrenOf(epic.id)) {
-      if (child.status === 'testing') cascadeChildren.push(child);
-    }
-  }
-
-  const seen = new Set();
-  const promotions = [...actions.promotions, ...cascadeChildren]
+  // A lone ticket moved straight to Done merges as-is: one merge commit that
+  // preserves the ticket's own history.
+  const promotions = (actions.promotions || [])
     .map((ticket) => store.getById(ticket.id))
-    .filter((ticket) => ticket && !seen.has(ticket.id) && seen.add(ticket.id))
+    .filter(Boolean)
     .sort((a, b) => a.createdTime.localeCompare(b.createdTime));
   for (const ticket of promotions) {
     const board = findProject(config, ticket.projectKey);
@@ -249,18 +237,36 @@ async function processStoreActions(config, store, actions, cache) {
     }
   }
 
-  // Every Testing ticket under these epics has now been through promoteTicket;
-  // close each epic whose cascade finished. Any child that was not in Testing
-  // (still being worked, or parked by a failed merge) is left for the human to
-  // merge individually, and called out on the epic.
+  // Moving an epic to Done is shorthand for "land everything under this epic on
+  // main." Squash all of the epic's Testing children into a single commit on
+  // main (rather than transferring each ticket's commits over as-is), then close
+  // the epic. Children not yet in Testing are left for the human to merge.
+  const epicMerges = (actions.epicMerges || [])
+    .map((ref) => store.getById(ref.id))
+    .filter((epic) => epic && epic.status !== 'done');
   for (const epicRef of epicMerges) {
     const epic = store.getById(epicRef.id);
     if (!epic || epic.status === 'done') continue;
-    const children = store.childrenOf(epic.id);
-    const mergedCount = children.filter((child) => child.status === 'done').length;
-    const stragglers = children.filter((child) => !['done', 'cancelled'].includes(child.status));
+    const board = findProject(config, epic.projectKey);
+    if (!board) {
+      store.enqueueComment(epic.id, `Automatic merge cannot start because project "${epic.projectKey}" is not configured.`);
+      continue;
+    }
+    const children = store.childrenOf(epic.id).filter((child) => child.status === 'testing');
+    const tracker = projectTrackerFacade({ store, board, cache });
+    const result = await integration.promoteEpic({ config, board, epic, children, tracker, log });
+    if (result.status === 'remote_advanced') {
+      log(`main advanced while squashing epic "${epic.title}"; retrying next tick`);
+      return { status: 'blocked', reason: 'remote_advanced' };
+    }
+
+    // Re-read children: the squash marked the merged ones Done; anything left in
+    // Testing hit a conflict/validation failure and was parked individually.
+    const after = store.childrenOf(epic.id);
+    const mergedCount = after.filter((child) => child.status === 'done').length;
+    const stragglers = after.filter((child) => !['done', 'cancelled'].includes(child.status));
     store.transition(epic.id, 'done');
-    let note = `Epic marked Done. Merged ${mergedCount} ticket(s) to main.`;
+    let note = `Epic marked Done. Squashed ${mergedCount} ticket(s) into a single commit on main.`;
     if (stragglers.length) {
       note += ` ${stragglers.length} ticket(s) were not in Testing yet and were left for you to merge individually: ${stragglers.map((child) => `"${child.title}"`).join(', ')}.`;
     }

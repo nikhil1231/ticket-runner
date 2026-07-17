@@ -324,6 +324,60 @@ test('Done promotion merges only the ticket, pushes main, and finalizes Notion',
   assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
 });
 
+test('epic promotion squashes all its tickets into a single commit on main', async (t) => {
+  const f = fixture(t);
+  const p1 = makePage('00000000-0000-0000-0000-000000000101', 'First', '2026-01-01T00:00:00Z');
+  const p2 = makePage('00000000-0000-0000-0000-000000000102', 'Second', '2026-01-02T00:00:00Z');
+  const r1 = addTicket(f, p1, 'one.txt', 'one\n');
+  const r2 = addTicket(f, p2, 'two.txt', 'two\n');
+  const tracker = trackerFixture([p1, p2]);
+  const epic = { shortId: 'epicshort001', title: 'Bundle', pageId: 'epic-page-1', projectKey: f.board.app };
+  const children = [p1, p2].map((page) => extractTicket(page));
+
+  const before = git(f.repoPath, ['rev-parse', 'origin/main']);
+  const result = await integration.promoteEpic({ ...f, epic, children, tracker, services, log: () => {} });
+  assert.equal(result.status, 'merged');
+
+  git(f.repoPath, ['fetch', 'origin', 'main']);
+  const after = git(f.repoPath, ['rev-parse', 'origin/main']);
+  // Exactly one new commit on main — the squash — not two merges plus their
+  // own commits transferred over as-is.
+  const newCommits = git(f.repoPath, ['rev-list', `${before}..${after}`]).split(/\r?\n/).filter(Boolean);
+  assert.equal(newCommits.length, 1);
+  // Both tickets' changes are present in that single commit...
+  assert.equal(git(f.repoPath, ['cat-file', '-e', `${after}:one.txt`]), '');
+  assert.equal(git(f.repoPath, ['cat-file', '-e', `${after}:two.txt`]), '');
+  // ...but neither ticket head is an ancestor (squashed, not merged in as-is).
+  assert.throws(() => git(f.repoPath, ['merge-base', '--is-ancestor', r1.headSha, after]));
+  assert.throws(() => git(f.repoPath, ['merge-base', '--is-ancestor', r2.headSha, after]));
+
+  // Both tickets are finalized as Done and their metadata cleared.
+  assert.equal(p1.properties.Status.status.name, 'Done');
+  assert.equal(p2.properties.Status.status.name, 'Done');
+  assert.equal(ticketState.readMeta(f.baseDir, r1.shortId), null);
+  assert.equal(ticketState.readMeta(f.baseDir, r2.shortId), null);
+});
+
+test('epic promotion recovers idempotently when its squash is already on main', async (t) => {
+  const f = fixture(t);
+  const p1 = makePage('00000000-0000-0000-0000-000000000111', 'Only', '2026-01-01T00:00:00Z');
+  const ref = addTicket(f, p1, 'only.txt', 'only\n');
+  // Simulate a crash after the squash pushed but before the tickets finalized:
+  // land the ticket's change on main out of band, leaving the ticket in Testing.
+  git(f.repoPath, ['merge', '--no-ff', '--no-edit', ref.branch]);
+  git(f.repoPath, ['push', 'origin', 'main']);
+  const tracker = trackerFixture([p1]);
+  const epic = { shortId: 'epicshort111', title: 'Recovered', pageId: 'epic-page-2', projectKey: f.board.app };
+
+  const before = git(f.repoPath, ['rev-parse', 'origin/main']);
+  const result = await integration.promoteEpic({ ...f, epic, children: [extractTicket(p1)], tracker, services, log: () => {} });
+  assert.equal(result.status, 'already_merged');
+  git(f.repoPath, ['fetch', 'origin', 'main']);
+  assert.equal(git(f.repoPath, ['rev-parse', 'origin/main']), before); // nothing pushed
+  assert.equal(p1.properties.Status.status.name, 'Done'); // ticket still finalized
+  assert.equal(ticketState.readMeta(f.baseDir, ref.shortId), null);
+});
+
 test('native-sensitive detection blocks config, native, plugin, and dependency changes', () => {
   const board = {
     stackBlockPatterns: [

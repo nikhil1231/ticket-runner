@@ -119,8 +119,9 @@ approving epics.
    nothing left to add, or every ticket has reached the Testing stack — the
    runner moves the **epic** to **Testing** and stops proposing tickets for it
    (so it never flip-flops between "done" and "here are three more"). Then:
-   - Move the epic to **Done** to merge *every* ticket under it to the project's
-     main branch at once, exactly as if you had moved each ticket to Done.
+   - Move the epic to **Done** to land *every* ticket under it on the project's
+     main branch at once, squashed into a single commit for the epic (rather than
+     carrying each ticket's individual commits over as-is).
    - Move the epic back to **In progress** to have the runner resume adding
      tickets to it.
    An epic whose tickets were all merged (or cancelled) individually closes to

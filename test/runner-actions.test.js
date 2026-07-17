@@ -42,25 +42,30 @@ test('processStoreActions: moving an epic to Done cascade-merges every Testing t
   toTesting(store, c2.id);
   store.transition(straggler.id, 'in_progress'); // not in Testing yet
 
-  // Stub the real merge with what a successful promotion does to the store: mark
-  // the ticket done (the store-backed tracker's mirror(status:'done') path).
+  // Stub the real squash with what a successful epic promotion does to the
+  // store: mark every Testing child done (the store-backed tracker's
+  // mirror(status:'done') path).
   const merged = [];
-  const original = integration.promoteTicket;
-  integration.promoteTicket = async ({ ticket }) => { merged.push(ticket.id); store.transition(ticket.id, 'done'); return { status: 'merged' }; };
-  t.after(() => { integration.promoteTicket = original; });
+  const original = integration.promoteEpic;
+  integration.promoteEpic = async ({ children }) => {
+    const ids = children.map((child) => child.id);
+    ids.forEach((id) => { merged.push(id); store.transition(id, 'done'); });
+    return { status: 'merged', merged: ids };
+  };
+  t.after(() => { integration.promoteEpic = original; });
 
   const actions = { promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [store.getById(epic.id)] };
   const result = await runner.processStoreActions(config(baseDir, store), store, actions, runner.trackerCache());
 
   assert.equal(result.status, 'ok');
-  assert.deepEqual(merged.sort(), [c1.id, c2.id].sort()); // only the two Testing tickets merged
+  assert.deepEqual(merged.sort(), [c1.id, c2.id].sort()); // only the two Testing tickets squashed
   assert.equal(store.getById(c1.id).status, 'done');
   assert.equal(store.getById(c2.id).status, 'done');
   assert.equal(store.getById(straggler.id).status, 'in_progress'); // straggler left alone
-  assert.equal(store.getById(epic.id).status, 'done'); // epic closed after cascade
+  assert.equal(store.getById(epic.id).status, 'done'); // epic closed after squash
 
   const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
-  assert.ok(epicComments.some((op) => /Merged 2 ticket\(s\)/.test(op.payload.text)));
+  assert.ok(epicComments.some((op) => /Squashed 2 ticket\(s\)/.test(op.payload.text)));
   assert.ok(epicComments.some((op) => /not in Testing yet/.test(op.payload.text)));
 });
 
@@ -72,9 +77,9 @@ test('processStoreActions: a blocked promotion (remote advanced) leaves the epic
   const c1 = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'C1', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
   toTesting(store, c1.id);
 
-  const original = integration.promoteTicket;
-  integration.promoteTicket = async () => ({ status: 'remote_advanced' });
-  t.after(() => { integration.promoteTicket = original; });
+  const original = integration.promoteEpic;
+  integration.promoteEpic = async () => ({ status: 'remote_advanced' });
+  t.after(() => { integration.promoteEpic = original; });
 
   const actions = { promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [store.getById(epic.id)] };
   const result = await runner.processStoreActions(config(baseDir, store), store, actions, runner.trackerCache());
