@@ -20,10 +20,12 @@ function fixture(t) {
 function fakeTransport() {
   const calls = { rest: [], graphql: [] };
   const issues = new Map();
+  const foreignProjectItems = [];
   let nextIssue = 42;
   return {
     calls,
     issues,
+    foreignProjectItems,
     async rest(method, apiPath, body, opts = {}) {
       calls.rest.push({ method, path: apiPath, body, opts });
       if (method === 'POST' && apiPath === '/repos/acme/widgets/issues') {
@@ -75,19 +77,23 @@ function fakeTransport() {
       if (/UpdateProjectStatus/.test(query)) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.itemId } } };
       if (/UpdateProjectText/.test(query)) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.itemId } } };
       if (/ProjectItems/.test(query)) {
-        return {
-          node: {
-            items: {
-              nodes: [...issues.values()]
-                .filter((issue) => !issue.skipProject)
-                .map((issue) => ({
-                  id: issue.projectItemId || 'ITEM_EXISTING',
-                  content: { number: issue.number },
-                  fieldValueByName: { name: issue.projectStatus || 'Not started' },
-                })),
-            },
-          },
-        };
+        const nodes = [...issues.values()]
+          .filter((issue) => !issue.skipProject)
+          .map((issue) => ({
+            id: issue.projectItemId || 'ITEM_EXISTING',
+            content: { number: issue.number, repository: { nameWithOwner: issue.repoNameWithOwner || 'acme/widgets' } },
+            fieldValueByName: { name: issue.projectStatus || 'Not started' },
+          }));
+        // Extra project items that live on the shared board but belong to another
+        // repo (and so are not in this repo's REST issue list).
+        for (const item of foreignProjectItems) {
+          nodes.push({
+            id: item.projectItemId || 'ITEM_FOREIGN',
+            content: { number: item.number, repository: { nameWithOwner: item.repoNameWithOwner } },
+            fieldValueByName: { name: item.projectStatus || 'Not started' },
+          });
+        }
+        return { node: { items: { nodes } } };
       }
       throw new Error(`unexpected GraphQL ${query}`);
     },
@@ -662,6 +668,40 @@ test('pollCommands ignores issues outside the configured Project v2 project', as
   const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
 
   assert.deepEqual(commands.map((command) => command.trackerId), ['5']);
+});
+
+test('pollCommands ignores same-numbered project items from other repos on a shared board', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  // This repo's brand-new issue #1, sitting on the shared Project board as "Not started".
+  transport.issues.set(1, {
+    number: 1,
+    node_id: 'ISSUE_1',
+    title: 'Add workout images',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    projectItemId: 'ITEM_REAL',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  // A stale item for a *different* repo's issue #1 that shares the board (e.g. an
+  // old repo left behind after a rename). It must not clobber this repo's #1.
+  transport.foreignProjectItems.push({
+    number: 1,
+    repoNameWithOwner: 'acme/legacy',
+    projectItemId: 'ITEM_FOREIGN',
+    projectStatus: 'Needs info',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  const create = commands.find((command) => command.type === 'create' && command.trackerId === '1');
+  assert.ok(create, 'this repo\'s issue #1 should be intaken');
+  // Would be 'needs_info' (from the foreign item) if the map collided by number.
+  assert.equal(create.snapshot.status, 'queued');
+  assert.equal(create.snapshot.trackerMeta.projectItemId, 'ITEM_REAL');
 });
 
 test('pollCommands skips project-filtered polling when the configured Project v2 node is missing', async (t) => {
