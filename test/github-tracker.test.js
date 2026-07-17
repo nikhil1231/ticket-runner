@@ -81,7 +81,15 @@ function fakeTransport() {
           .filter((issue) => !issue.skipProject)
           .map((issue) => ({
             id: issue.projectItemId || 'ITEM_EXISTING',
-            content: { number: issue.number, repository: { nameWithOwner: issue.repoNameWithOwner || 'acme/widgets' } },
+            content: {
+              number: issue.number,
+              title: issue.title,
+              body: issue.body,
+              node_id: issue.node_id,
+              url: issue.html_url,
+              labels: { nodes: (issue.labels || []).map((label) => ({ name: label.name || label })) },
+              repository: { nameWithOwner: issue.repoNameWithOwner || 'acme/widgets' },
+            },
             fieldValueByName: { name: issue.projectStatus || 'Not started' },
           }));
         // Extra project items that live on the shared board but belong to another
@@ -89,7 +97,15 @@ function fakeTransport() {
         for (const item of foreignProjectItems) {
           nodes.push({
             id: item.projectItemId || 'ITEM_FOREIGN',
-            content: { number: item.number, repository: { nameWithOwner: item.repoNameWithOwner } },
+            content: {
+              number: item.number,
+              title: item.title,
+              body: item.body,
+              node_id: item.node_id,
+              url: item.html_url,
+              labels: { nodes: (item.labels || []).map((label) => ({ name: label.name || label })) },
+              repository: { nameWithOwner: item.repoNameWithOwner },
+            },
             fieldValueByName: { name: item.projectStatus || 'Not started' },
           });
         }
@@ -601,6 +617,42 @@ test('pollCommands links GitHub issues that declare a parent issue', async (t) =
   assert.equal(child.parentId, parent.id);
 });
 
+test('pollCommands imports a manually-created epic body and parent link', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const mission = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '1',
+    projectKey: 'widgets',
+    kind: 'mission',
+    title: 'Mission',
+    status: 'in_progress',
+  });
+  transport.issues.set(18, {
+    number: 18,
+    node_id: 'ISSUE_18',
+    title: 'Add sprint drills',
+    body: 'Parent #1\n\nBuild pattern-recognition sprint drills with grading and persistence.',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands[0].type, 'create');
+  assert.equal(commands[0].snapshot.kind, 'epic');
+  assert.equal(commands[0].snapshot.parentTrackerId, '1');
+  assert.match(commands[0].snapshot.body, /sprint drills/);
+  applyTrackerCommands({ store, commands });
+  const epic = store.getByTrackerId('github:acme/widgets', '18');
+  assert.equal(epic.kind, 'epic');
+  assert.equal(epic.parentId, mission.id);
+  assert.match(epic.body, /sprint drills/);
+});
+
 test('pollCommands repairs existing GitHub issue parent links from body text', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
@@ -638,6 +690,51 @@ test('pollCommands repairs existing GitHub issue parent links from body text', a
   assert.equal(link.ticket.id, child.id);
   applyTrackerCommands({ store, commands: [link] });
   assert.equal(store.getById(child.id).parentId, parent.id);
+});
+
+
+test('pollCommands repairs cached orphan epic body and parent from project items on 304', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const mission = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '1',
+    projectKey: 'widgets',
+    kind: 'mission',
+    title: 'Mission',
+    status: 'in_progress',
+  });
+  const epic = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '18',
+    projectKey: 'widgets',
+    kind: 'epic',
+    title: 'Add sprint drills',
+    body: '',
+    status: 'queued',
+    mirroredStatus: 'Not started',
+  });
+  transport.issues.set(18, {
+    number: 18,
+    node_id: 'ISSUE_18',
+    title: 'Add sprint drills',
+    body: 'Parent: https://github.com/acme/widgets/issues/1\n\nImplement sprint drills.',
+    labels: [{ name: 'epic' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-02T00:00:00Z',
+  });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.ok(commands.some((command) => command.type === 'refresh_intent'));
+  assert.ok(commands.some((command) => command.type === 'link_parent'));
+  applyTrackerCommands({ store, commands });
+  const repaired = store.getById(epic.id);
+  assert.equal(repaired.parentId, mission.id);
+  assert.match(repaired.body, /sprint drills/);
 });
 
 test('pollCommands ignores issues outside the configured Project v2 project', async (t) => {
