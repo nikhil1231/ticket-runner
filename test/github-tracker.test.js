@@ -393,7 +393,7 @@ test('pollCommands does not requeue stack-blocked Needs info tickets from the bo
   assert.equal(commands.length, 0);
 });
 
-test('pollCommands does not requeue a Testing ticket from a stale Not started board status', async (t) => {
+test('pollCommands requeues a Testing ticket a human moved back to Not started', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
   transport.issues.set(14, {
@@ -415,6 +415,37 @@ test('pollCommands does not requeue a Testing ticket from a stale Not started bo
     status: 'testing',
     mirroredStatus: 'Testing',
   });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'requeue');
+});
+
+test('pollCommands ignores a recent stale Not started board status for a Testing ticket', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(15, {
+    number: 15,
+    node_id: 'ISSUE_15',
+    title: 'Recently mirrored testing ticket',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '15',
+    projectKey: 'widgets',
+    title: 'Recently mirrored testing ticket',
+    status: 'testing',
+    mirroredStatus: 'Not started',
+  });
+  store.setMirrorState(existing.id, { mirroredStatus: 'Testing' });
   store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
   const gh = tracker(transport);
   const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
