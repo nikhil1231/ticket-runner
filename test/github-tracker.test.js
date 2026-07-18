@@ -51,7 +51,15 @@ function fakeTransport() {
         issues.set(issue.number, issue);
         return { status: 200, data: issue };
       }
-      if (method === 'GET' && issueMatch) return { status: 200, data: issues.get(Number(issueMatch[1])) };
+      if (method === 'GET' && issueMatch) {
+        const number = Number(issueMatch[1]);
+        if (!issues.has(number)) {
+          const error = new Error(`GitHub GET ${apiPath} -> 404: {"message":"Not Found"}`);
+          error.status = 404;
+          throw error;
+        }
+        return { status: 200, data: issues.get(number) };
+      }
       if (method === 'POST' && /\/comments$/.test(apiPath)) return { status: 201, data: { id: 1, body: body.body } };
       if (method === 'GET' && /\/comments/.test(apiPath)) return { status: 200, data: [] };
       if (method === 'GET' && /\/issues\?/.test(apiPath)) {
@@ -179,6 +187,41 @@ test('pollCommands emits cancel when the board moves an open ticket to Cancelled
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'cancel');
   assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands emits remote_missing when a locally tracked GitHub issue has been deleted', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '31',
+    projectKey: 'widgets',
+    title: 'Deleted remotely',
+    status: 'queued',
+    mirroredStatus: 'Not started',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'remote_missing');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('remote_missing cancellation does not enqueue a mirror back to the deleted issue', async (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '31',
+    projectKey: 'widgets',
+    title: 'Deleted remotely',
+    status: 'queued',
+  });
+
+  applyTrackerCommands({ store, commands: [{ type: 'remote_missing', ticket }] });
+
+  assert.equal(store.getById(ticket.id).status, 'cancelled');
+  assert.equal(store.stats().outboxPending, 0);
 });
 
 test('pollCommands requeues an approved ticket from the board status even when the issue list is unchanged (304)', async (t) => {
