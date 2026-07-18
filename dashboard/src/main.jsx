@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CircleHelp, LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleHelp, Layers, LayoutDashboard, OctagonAlert, RefreshCw, ScrollText, Sprout, Target, X } from 'lucide-react';
 import './styles.css';
 
 const STATUS_COLOR = {
@@ -69,6 +69,27 @@ function StatusTag({ status }) {
     <span className="tag">
       <Dot color={STATUS_COLOR[status] || 'var(--muted)'} />
       {STATUS_LABEL[status] || status}
+    </span>
+  );
+}
+
+// Epics and missions are structural containers, not ordinary work — mark them
+// so they stand out among feature tickets. Features render nothing (the quiet
+// default); incubator is marked but low-key so it isn't mistaken for a feature.
+const KIND_META = {
+  epic: { label: 'Epic', Icon: Layers },
+  mission: { label: 'Mission', Icon: Target },
+  incubator: { label: 'Incubator', Icon: Sprout },
+};
+
+function KindBadge({ kind }) {
+  const meta = KIND_META[kind];
+  if (!meta) return null;
+  const { label, Icon } = meta;
+  return (
+    <span className={`kind-badge kind-${kind}`}>
+      <Icon size={12} />
+      {label}
     </span>
   );
 }
@@ -367,11 +388,25 @@ function IssueText({ item }) {
 // they sit alongside dependency blockages at the top. Tickets already shown
 // as blockers are skipped — they have a stronger card there already.
 function NeedsInfoPanel({ items = [], blockerIds, onOpen }) {
+  // Collapsed by default: this is reference material a human checks
+  // occasionally, not something that should push the dashboard down. State is
+  // intentionally not persisted — every load starts collapsed.
+  const [open, setOpen] = useState(false);
   const list = items.filter((item) => !blockerIds?.has(item.shortId));
   if (!list.length) return null;
   return (
     <>
-      <h2 className="needsinfo-h">Needs info</h2>
+      <button
+        className="needsinfo-h needsinfo-toggle"
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        Needs info
+        <span className="needsinfo-count">{list.length}</span>
+      </button>
+      {open ? (
       <div className="needsinfo-panel">
         <div className="blockage-summary">
           <CircleHelp size={16} className="needsinfo-icon" />
@@ -397,6 +432,7 @@ function NeedsInfoPanel({ items = [], blockerIds, onOpen }) {
           ))}
         </div>
       </div>
+      ) : null}
     </>
   );
 }
@@ -474,6 +510,7 @@ function MiniTicketList({ items = [], onOpen, empty }) {
             <TicketLink item={item} onOpen={onOpen} />
             <div className="state-meta">
               <ProjectTag project={item.project} />
+              <KindBadge kind={item.kind} />
               <StatusTag status={item.status} />
               {item.blocked ? <BlockageTag role="blocked" /> : null}
               {item.agent ? <span className="mono">{item.agent}</span> : null}
@@ -587,7 +624,7 @@ function InFlightPanel({ items = [], onOpen }) {
           <div className="task-tabs" role="tablist" aria-label="Running tasks">
             {items.map((item) => (
               <button
-                className={`task-tab${item.shortId === active?.shortId ? ' active' : ''}`}
+                className={`task-tab kind-${item.kind}${item.shortId === active?.shortId ? ' active' : ''}`}
                 key={item.shortId}
                 type="button"
                 role="tab"
@@ -595,7 +632,10 @@ function InFlightPanel({ items = [], onOpen }) {
                 onClick={() => setActiveShortId(item.shortId)}
               >
                 <span>{item.title || '(untitled)'}</span>
-                <span className="mono">{item.shortId}</span>
+                <span className="task-tab-sub">
+                  <span className="mono">{item.shortId}</span>
+                  <KindBadge kind={item.kind} />
+                </span>
               </button>
             ))}
           </div>
@@ -604,6 +644,7 @@ function InFlightPanel({ items = [], onOpen }) {
               <div className="active-task-meta">
                 <TicketLink item={active} onOpen={onOpen} />
                 <ProjectTag project={active.project} />
+                <KindBadge kind={active.kind} />
                 <StatusTag status={active.status} />
                 {active.agent ? <span className="mono">{active.agent}</span> : null}
                 <span className="muted nowrap">{ago(active.at)}</span>

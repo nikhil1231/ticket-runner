@@ -110,6 +110,16 @@ footer{margin-top:34px;color:var(--muted);font-size:12px}
 .task-tab{border:1px solid var(--hair);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:7px 9px;cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;gap:1px;min-width:180px;max-width:280px;text-align:left}
 .task-tab span:first-child{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:650}
 .task-tab.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface))}
+.task-tab-sub{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* Kind accent on the left edge so epics/missions read as structural before the
+   label does; placed after .active so the accent survives selection. */
+.task-tab.kind-epic{border-left:3px solid var(--c5)}
+.task-tab.kind-mission{border-left:3px solid var(--c8)}
+.kind-badge{font-size:11px;padding:1px 7px;border-radius:999px;white-space:nowrap;font-weight:650;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--hair)}
+.kind-badge svg{flex:0 0 auto}
+.kind-badge.kind-epic{color:var(--c5);border-color:color-mix(in srgb,var(--c5) 50%,var(--hair));background:color-mix(in srgb,var(--c5) 10%,var(--surface))}
+.kind-badge.kind-mission{color:var(--c8);border-color:color-mix(in srgb,var(--c8) 55%,var(--hair));background:color-mix(in srgb,var(--c8) 12%,var(--surface));font-weight:700}
+.kind-badge.kind-incubator{color:var(--ink-2);border-color:var(--hair);background:var(--surface-2)}
 .active-task-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--grid);border-bottom:1px solid var(--grid);padding:9px 0;margin:2px 0 10px}
 .task-log-panel{display:grid;gap:10px}
 .task-log-head,.task-invocation-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
@@ -132,6 +142,10 @@ footer{margin-top:34px;color:var(--muted);font-size:12px}
 .tag.blocker-tag{color:var(--critical);border-color:color-mix(in srgb,var(--critical) 55%,var(--hair));background:color-mix(in srgb,var(--critical) 9%,var(--surface))}
 .tag.blocked-tag{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 55%,var(--hair));border-style:dashed;background:color-mix(in srgb,var(--warning) 9%,var(--surface))}
 .needsinfo-h{color:var(--warning);margin-top:22px}
+.needsinfo-toggle{display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;padding:0;cursor:pointer;font:inherit;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--warning)}
+.needsinfo-toggle:hover{opacity:.78}
+.needsinfo-toggle svg{flex:0 0 auto}
+.needsinfo-count{font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:0;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--warning) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--warning) 45%,var(--hair))}
 .needsinfo-panel{border:1px solid color-mix(in srgb,var(--warning) 45%,var(--hair));background:color-mix(in srgb,var(--warning) 4%,var(--surface));border-radius:8px;padding:14px 15px}
 .needsinfo-icon{color:var(--warning);flex:0 0 auto;margin-top:2px}
 .needsinfo-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:8px;margin-top:12px}
