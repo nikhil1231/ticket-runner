@@ -551,7 +551,12 @@ function LogBox({ title, lines = [] }) {
 }
 
 function RunningTaskLog({ task }) {
-  const [state, setState] = useState({ loading: false, data: null, error: '' });
+  // `loaded` (sticky once the first fetch resolves) gates the empty states
+  // instead of the transient `loading` flag. The panel polls every 4s, and
+  // gating on `loading` made the "no run logs" box blink out on each poll —
+  // collapsing the panel height and jolting the whole page below it. Keeping
+  // the last-known data across in-flight polls holds the layout steady.
+  const [state, setState] = useState({ loading: false, loaded: false, data: null, error: '' });
 
   const loadTaskLogs = useCallback(async () => {
     if (!task?.shortId) return;
@@ -560,9 +565,9 @@ function RunningTaskLog({ task }) {
       const response = await fetch(`/api/task-logs/${encodeURIComponent(task.shortId)}?lines=300`, { cache: 'no-store' });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'task log load failed');
-      setState({ loading: false, data: body, error: '' });
+      setState({ loading: false, loaded: true, data: body, error: '' });
     } catch (taskLogError) {
-      setState((current) => ({ loading: false, data: current.data, error: taskLogError.message }));
+      setState((current) => ({ ...current, loading: false, loaded: true, error: taskLogError.message }));
     }
   }, [task?.shortId]);
 
@@ -579,10 +584,10 @@ function RunningTaskLog({ task }) {
     <div className="task-log-panel">
       <div className="task-log-head">
         <span className="mono">{state.data?.run?.name || 'no run directory yet'}</span>
-        <span className="sub">{state.loading ? 'Loading...' : state.data?.generatedAt ? `Updated ${ago(state.data.generatedAt)}` : ''}</span>
+        <span className="sub">{state.loaded ? (state.data?.generatedAt ? `Updated ${ago(state.data.generatedAt)}` : '') : 'Loading...'}</span>
       </div>
       {state.error ? <div className="note err">{state.error}</div> : null}
-      {!state.loading && !state.data?.run ? <Empty>No run logs found for this task yet.</Empty> : null}
+      {state.loaded && !state.data?.run ? <Empty>No run logs found for this task yet.</Empty> : null}
       {state.data?.run && !hasLines ? <Empty>No CLI output has been written yet.</Empty> : null}
       {invocations.map((invocation) => (
         <div className="task-invocation" key={invocation.tag}>
