@@ -123,6 +123,28 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   if (codexProvider) assert.equal(codexProvider.tokens, 2500);
 });
 
+test('dashboard hides tickets whose tracker issue was deleted remotely', async (t) => {
+  const { baseDir, db, store } = fixture(t);
+  const visible = seed(store, { trackerId: 'issue-live', shortId: 'visible000001', title: 'Visible work' });
+  const deleted = seed(store, { trackerId: 'issue-gone', shortId: 'deleted00001', title: 'Deleted issue' });
+  store.transition(visible.id, 'in_progress');
+  store.markRemoteMissing(deleted.id, { trackerId: 'issue-gone' });
+  closeDb(db);
+
+  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const data = await requestJson(port, '/api/data');
+  assert.equal(data.status, 200);
+  assert.equal(data.body.store.totals.tickets, 1);
+  assert.equal(data.body.store.byStatus.cancelled, undefined);
+  assert.equal(data.body.store.projectStatus.widgets.cancelled, undefined);
+  assert.equal(data.body.store.current.running[0].shortId, 'visible000001');
+  assert.equal(data.body.store.activity.some((item) => item.shortId === 'deleted00001'), false);
+  assert.equal(collectTicketDetails(baseDir, 'deleted00001'), null);
+});
+
 test('dashboard /api/data surfaces human-wait dependency blockages transitively', async (t) => {
   const { baseDir, db, store } = fixture(t);
   const blocker = seed(store, { trackerId: 'issue-b0', shortId: 'humanblock01', title: 'Needs a human decision' });

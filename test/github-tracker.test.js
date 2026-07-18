@@ -220,7 +220,9 @@ test('remote_missing cancellation does not enqueue a mirror back to the deleted 
 
   applyTrackerCommands({ store, commands: [{ type: 'remote_missing', ticket }] });
 
-  assert.equal(store.getById(ticket.id).status, 'cancelled');
+  const hidden = store.getById(ticket.id);
+  assert.equal(hidden.status, 'cancelled');
+  assert.equal(hidden.meta.remoteMissing, true);
   assert.equal(store.stats().outboxPending, 0);
 });
 
