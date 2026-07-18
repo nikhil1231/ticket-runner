@@ -422,6 +422,30 @@ test('pollCommands still emits a plain authorize_merge for a feature moved Testi
   assert.equal(commands[0].ticket.id, existing.id);
 });
 
+test('pollCommands emits accept_done when a human resolves a Needs info ticket straight to Done', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(23, {
+    number: 23,
+    node_id: 'ISSUE_23',
+    title: 'Resolved by hand',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Done', // human did the work manually and closed it out
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({ tracker: 'github:acme/widgets', trackerId: '23', projectKey: 'widgets', kind: 'feature', title: 'Resolved by hand', status: 'needs_info', mirroredStatus: 'Needs info' });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'accept_done');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
 test('pollCommands does not requeue a Failed ticket from a stale Not started board status', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();

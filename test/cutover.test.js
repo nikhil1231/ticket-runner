@@ -45,3 +45,23 @@ test('resume_epic is a no-op when the epic is not in Testing', (t) => {
   applyTrackerCommands({ store, commands: [{ type: 'resume_epic', ticket: epic, snapshot: {} }] });
   assert.equal(store.getById(epic.id).status, 'in_progress');
 });
+
+test('accept_done marks a Needs info ticket the human resolved by hand as Done', (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '23', projectKey: 'widgets',
+    title: 'Resolved by hand', status: 'needs_info', mirroredStatus: 'Needs info',
+  });
+  applyTrackerCommands({ store, commands: [{ type: 'accept_done', ticket, snapshot: {} }] });
+  assert.equal(store.getById(ticket.id).status, 'done');
+});
+
+test('accept_done is a no-op when the ticket is no longer in Needs info', (t) => {
+  const { store } = fixture(t);
+  const ticket = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '24', projectKey: 'widgets',
+    title: 'Already moving', status: 'queued', mirroredStatus: 'Not started',
+  });
+  applyTrackerCommands({ store, commands: [{ type: 'accept_done', ticket, snapshot: {} }] });
+  assert.equal(store.getById(ticket.id).status, 'queued');
+});
