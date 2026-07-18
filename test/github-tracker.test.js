@@ -208,6 +208,33 @@ test('pollCommands emits remote_missing when a locally tracked GitHub issue has 
   assert.equal(commands[0].ticket.id, existing.id);
 });
 
+test('pollCommands emits remote_missing for legacy github tracker rows in the same repo', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const existing = store.upsertFromTracker({
+    tracker: 'github',
+    trackerId: '31',
+    projectKey: 'widgets',
+    title: 'Deleted legacy row',
+    status: 'needs_info',
+    trackerMeta: { url: 'https://github.com/acme/widgets/issues/31' },
+  });
+  store.upsertFromTracker({
+    tracker: 'github',
+    trackerId: '32',
+    projectKey: 'widgets',
+    title: 'Different repo row',
+    status: 'needs_info',
+    trackerMeta: { url: 'https://github.com/acme/other/issues/32' },
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'remote_missing');
+  assert.equal(commands[0].ticket.id, existing.id);
+});
+
 test('remote_missing cancellation does not enqueue a mirror back to the deleted issue', async (t) => {
   const { store } = fixture(t);
   const ticket = store.upsertFromTracker({
