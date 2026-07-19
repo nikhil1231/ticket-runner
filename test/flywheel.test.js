@@ -467,6 +467,38 @@ test('EPIC_COMPLETE with tickets still in flight freezes the epic in Testing and
   assert.notEqual(result2.status, 'epic_testing');
 });
 
+test('EPIC_COMPLETE with a child still queued keeps the epic In progress until the child lands', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Draining epic', parentId: mission.id, status: 'queued', tracker: 'github:acme/caligo' });
+  store.transition(epic.id, 'in_progress');
+  const done = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Already in testing', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  store.transition(done.id, 'in_progress');
+  store.transition(done.id, 'testing');
+  // A sibling that was planned but has not had its turn on the runner yet.
+  const pending = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Still queued', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+  store.deleteKv('flywheel:cooldown:caligo');
+
+  const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: nothing more to add' }]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'epic_waiting');
+  assert.equal(store.getById(epic.id).status, 'in_progress'); // not parked while a ticket is still queued
+  assert.ok(store.getKv('flywheel:cooldown:caligo', null)); // idle back-off so the planner isn't re-asked every tick
+  const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
+  assert.ok(epicComments.some((op) => /still being worked/.test(op.payload.text)));
+
+  // Once the last ticket reaches the testing branch, reconcileEpics parks the epic
+  // in Testing on the next pass — without re-invoking the planner.
+  store.transition(pending.id, 'in_progress');
+  store.transition(pending.id, 'testing');
+  store.deleteKv('flywheel:cooldown:caligo');
+  const spawnEngine2 = scriptedSpawnEngine([]);
+  await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
+  assert.equal(spawnEngine2.calls.length, 0);
+  assert.equal(store.getById(epic.id).status, 'testing');
+});
+
 test('an approved epic is promoted from Not started to In progress when the flywheel starts it', async (t) => {
   const { store, baseDir } = fixture(t);
   const mission = seedMission(store);
