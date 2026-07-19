@@ -252,14 +252,40 @@ test('epic phase and ticket phase use their own planner policies', async (t) => 
   assert.equal(ticketSpawn.calls[0].cli, 'codex');
 });
 
-test('epic phase does not re-trigger while a proposal is awaiting review', async (t) => {
+test('epic phase does not propose when the in-review pool is already full', async (t) => {
   const { store, baseDir } = fixture(t);
   const mission = seedMission(store);
-  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Pending epic', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  const b = board({ flywheel: { enabled: true, continuous: true, backlogThreshold: 2, maxOpenTickets: 10, maxEpics: 2, maxTicketsPerPass: 3, cooldownMs: 900000 } });
+  // maxEpics (2) proposals already awaiting review: the semaphore is saturated.
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Pending epic 1', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Pending epic 2', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
   const spawnEngine = scriptedSpawnEngine([]);
-  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine } });
+  const result = await runFlywheelPass({ config: { baseDir }, board: b, store, services: { spawnEngine } });
   assert.equal(result.status, 'awaiting_epic_approval');
   assert.equal(spawnEngine.calls.length, 0);
+});
+
+test('epic phase tops the in-review pool back up to maxEpics (semaphore, not latch)', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store);
+  const b = board({ flywheel: { enabled: true, continuous: true, backlogThreshold: 2, maxOpenTickets: 10, maxEpics: 3, maxTicketsPerPass: 3, cooldownMs: 900000 } });
+  // Pool has drained to one proposal (the others were picked/rejected). The
+  // semaphore must refill the remaining slots even though a proposal is still in
+  // review and the mission itself is unchanged.
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Still pending', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+  const spawnEngine = scriptedSpawnEngine([
+    { lastMessage: ticketsMessage('epics', [
+      { title: 'Refill A', summary: 'S'.repeat(60) },
+      { title: 'Refill B', summary: 'S'.repeat(60) },
+    ]) },
+  ]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: b, store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.created, 2); // refilled 2 slots: pool goes 1 -> 3
+  const inReview = store.ticketsByKind('caligo', 'epic').filter((e) => e.status === 'in_review');
+  assert.equal(inReview.length, 3);
 });
 
 test('ticket phase generates tickets under an approved epic and wires dependsOn', async (t) => {
@@ -379,9 +405,10 @@ test('mission edits re-trigger the epic phase even when non-cancelled epics alre
   await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: wt } });
   assert.equal(spawnEngine.calls.length, 1);
 
-  // second pass: the new epic just created is still 'in_review', so anyInReview
-  // blocks another epic-phase run regardless of mission hash. With no epic
-  // approved yet (status 'queued'), the pass has nothing to do.
+  // second pass: the mission hash is now stored (missionChanged=false) and this
+  // is a one-shot mission (not continuous), so the semaphore does not refill —
+  // the single in-review proposal is left as-is. With no epic approved yet, the
+  // pass has nothing to do.
   const spawnEngine2 = scriptedSpawnEngine([]);
   const result2 = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
   assert.equal(spawnEngine2.calls.length, 0);
