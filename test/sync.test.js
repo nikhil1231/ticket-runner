@@ -94,3 +94,27 @@ test('backoff grows and caps at one hour', () => {
   assert.equal(backoffMs(1), 60000);
   assert.ok(backoffMs(20) <= 60 * 60 * 1000);
 });
+
+test('flushOutbox routes an archive op to tracker.archiveItem', async (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store);
+  store.transition(ticket.id, 'done');
+  store.archiveTicket(ticket.id); // enqueues the archive op
+  const archived = [];
+  const tracker = { ...fakeTracker(), async archiveItem(tk) { archived.push(tk.trackerId); } };
+  const res = await flushOutbox({ store, trackerFor: () => tracker });
+  assert.ok(res.done >= 1);
+  assert.deepEqual(archived, [ticket.trackerId]);
+  assert.ok(!store.outboxDue().some((op) => op.op === 'archive'));
+});
+
+test('flushOutbox no-ops an archive op when the tracker cannot archive', async (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store);
+  store.transition(ticket.id, 'done');
+  store.archiveTicket(ticket.id);
+  const tracker = fakeTracker(); // no archiveItem method
+  const res = await flushOutbox({ store, trackerFor: () => tracker });
+  assert.equal(res.parked, 0); // completed rather than parked
+  assert.ok(!store.outboxDue().some((op) => op.op === 'archive'));
+});

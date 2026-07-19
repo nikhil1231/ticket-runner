@@ -184,6 +184,31 @@ Planning runs are read-only: a detached worktree, no edits, no git, same
 pattern as the Ticket Incubator. `fallbackPolicies.planner` defaults to
 `claude` then `codex`.
 
+## Archive clean-up
+
+Every poll tick the runner archives tickets that have been closed for long
+enough, so old cards stop piling up in the board's Done/Cancelled columns.
+Archiving removes the card from the GitHub Project board via
+`archiveProjectV2Item`; the underlying issue stays closed, just off the board.
+Archived tickets are also hidden from the local dashboard.
+
+- Only `done` and `cancelled` tickets are archived (`failed` stays visible for
+  triage).
+- A ticket qualifies once it has been closed for longer than `closedForMs`
+  (default 24h).
+- Currently GitHub Projects only; Notion-tracked projects are skipped.
+
+Config (`config.json`, top-level for all projects or per-project override under
+`projects[]`, same precedence as `flywheel`):
+
+```json
+{ "archive": { "enabled": true, "closedForMs": 86400000 } }
+```
+
+- `enabled` - defaults to `true`; set `false` to leave closed cards on the board.
+- `closedForMs` - how long a ticket must have been closed before its card is
+  archived.
+
 ## Project Registry
 
 The preferred coordination model is a Notion Project Registry database. Each

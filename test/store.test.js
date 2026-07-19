@@ -357,6 +357,51 @@ test('queued can transition directly to done (epic auto-completion) or cancelled
   assert.equal(cancelled.status, 'cancelled');
 });
 
+test('listArchivable filters by status, closed window, and archived flag', (t) => {
+  const { store } = fixture(t);
+  const done = seed(store, { trackerId: 'd', title: 'Done' });
+  store.transition(done.id, 'done');
+  const cancelled = seed(store, { trackerId: 'c', title: 'Cancelled' });
+  store.transition(cancelled.id, 'cancelled');
+  const failed = seed(store, { trackerId: 'f', title: 'Failed' });
+  store.transition(failed.id, 'in_progress');
+  store.transition(failed.id, 'failed');
+  seed(store, { trackerId: 'o', title: 'Open' }); // stays queued
+
+  const opts = { projectKey: 'caligo', statuses: ['done', 'cancelled'] };
+  // Everything closed before the far future qualifies (except failed/open).
+  const due = store.listArchivable({ ...opts, before: '2099-01-01T00:00:00Z' });
+  assert.deepEqual(due.map((tk) => tk.title).sort(), ['Cancelled', 'Done']);
+  // Nothing closed that long ago.
+  assert.equal(store.listArchivable({ ...opts, before: '2000-01-01T00:00:00Z' }).length, 0);
+  // An already-archived ticket drops out.
+  store.archiveTicket(done.id);
+  assert.deepEqual(
+    store.listArchivable({ ...opts, before: '2099-01-01T00:00:00Z' }).map((tk) => tk.title),
+    ['Cancelled']
+  );
+});
+
+test('archiveTicket flags the ticket and enqueues a durable archive op', (t) => {
+  const { store } = fixture(t);
+  const done = seed(store, { trackerId: 'd' });
+  store.transition(done.id, 'done');
+  const archived = store.archiveTicket(done.id);
+  assert.equal(archived.meta.archived, true);
+  assert.ok(archived.meta.archivedAt);
+  assert.equal(store.pendingOutbox(done.id).filter((op) => op.op === 'archive').length, 1);
+});
+
+test('reopening an archived ticket clears the archived flag', (t) => {
+  const { store } = fixture(t);
+  const done = seed(store, { trackerId: 'd' });
+  store.transition(done.id, 'done');
+  store.archiveTicket(done.id);
+  const reopened = store.transition(done.id, 'queued');
+  assert.ok(!reopened.meta.archived);
+  assert.ok(!reopened.meta.archivedAt);
+});
+
 test('exportJsonl is deterministic and sorted by short_id', (t) => {
   const { store, baseDir } = fixture(t);
   seed(store, { trackerId: 'z', shortId: 'zzz000000000', title: 'Z' });

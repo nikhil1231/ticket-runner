@@ -8,6 +8,7 @@ const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
 const { extractIncubatorTicket, recoveryStatus, runIncubatorTicket, handoffTicket } = require('./lib/incubator');
 const { runFlywheelPass } = require('./lib/flywheel');
+const { runArchivePass } = require('./lib/archive');
 const { forceDeploy } = require('./lib/force-deploy');
 const worktrees = require('./lib/worktree');
 const eas = require('./lib/eas');
@@ -328,6 +329,7 @@ async function tick(config, { dryRun = false } = {}) {
     const reconciled = await reconcileBoards(config, undefined, cache);
     if (reconciled.status === 'blocked') log(`stack deploy blocked for ${reconciled.blocked.map((b) => b.board).join(', ')}; continuing to claim other work`);
     for (const board of config.projects) await runFlywheelPass({ config, board, store, log, services: {} });
+    for (const board of config.projects) await runArchivePass({ config, board, store, log });
     await flushOutbox({ store, trackerFor, log });
   }
   const candidates = store.readyTickets();

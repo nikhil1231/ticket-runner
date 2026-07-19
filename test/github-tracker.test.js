@@ -84,6 +84,7 @@ function fakeTransport() {
       if (/AddProjectItem/.test(query)) return { addProjectV2ItemById: { item: { id: 'ITEM_1' } } };
       if (/UpdateProjectStatus/.test(query)) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.itemId } } };
       if (/UpdateProjectText/.test(query)) return { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.itemId } } };
+      if (/ArchiveItem/.test(query)) return { archiveProjectV2Item: { item: { id: variables.itemId } } };
       if (/ProjectItems/.test(query)) {
         const nodes = [...issues.values()]
           .filter((issue) => !issue.skipProject)
@@ -156,6 +157,22 @@ test('upsertMirror creates an issue, adds it to Project v2, and updates status',
   });
   assert.ok(transport.calls.graphql.some((call) => /addProjectV2ItemById/.test(call.query)));
   assert.ok(transport.calls.graphql.some((call) => /updateProjectV2ItemFieldValue/.test(call.query) && call.variables.optionId === 'OPT_TESTING'));
+});
+
+test('archiveItem archives the project card via archiveProjectV2Item', async () => {
+  const transport = fakeTransport();
+  const gh = tracker(transport);
+  await gh.archiveItem({ trackerId: '42', trackerMeta: { projectItemId: 'ITEM_9' } });
+  const call = transport.calls.graphql.find((c) => /archiveProjectV2Item/.test(c.query));
+  assert.ok(call, 'expected an archiveProjectV2Item mutation');
+  assert.deepEqual(call.variables, { projectId: 'PROJECT_1', itemId: 'ITEM_9' });
+});
+
+test('archiveItem is a no-op when the ticket has no project item', async () => {
+  const transport = fakeTransport();
+  const gh = tracker(transport);
+  await gh.archiveItem({ trackerId: '42', trackerMeta: {} });
+  assert.ok(!transport.calls.graphql.some((c) => /archiveProjectV2Item/.test(c.query)));
 });
 
 test('upsertMirror labels a new epic issue with the epic label', async () => {
