@@ -18,7 +18,7 @@ function fixture(t) {
 function seed(store, overrides = {}) {
   const trackerId = overrides.trackerId || `page-${Math.random().toString(16).slice(2, 10)}`;
   return store.upsertFromTracker({
-    tracker: 'notion',
+    tracker: 'github:acme/caligo',
     trackerId,
     projectKey: overrides.projectKey || 'caligo',
     kind: overrides.kind || 'feature',
@@ -46,7 +46,7 @@ test('shortId uses provided value or derives a stable one', (t) => {
   const withShort = seed(store, { trackerId: 'p2', shortId: 'abcdef123456' });
   assert.equal(withShort.shortId, 'abcdef123456');
   const derived = seed(store, { trackerId: 'p3' });
-  assert.equal(derived.shortId, deriveShortId('notion', 'p3'));
+  assert.equal(derived.shortId, deriveShortId('github:acme/caligo', 'p3'));
 });
 
 test('upsertFromTracker falls back when provided shortId collides', (t) => {
@@ -323,15 +323,15 @@ test('setMirrorState records hash and stops re-mirroring identical payloads', (t
 
 test('retargetTracker clears remote identity and queues a mirror create', (t) => {
   const { store } = fixture(t);
-  const ticket = seed(store, { trackerId: 'notion-page', shortId: 'abc123abc123' });
+  const ticket = seed(store, { trackerId: 'legacy-page', shortId: 'abc123abc123' });
   const retargeted = store.retargetTracker(ticket.id, {
     tracker: 'github',
     trackerId: null,
-    trackerMeta: { migratedFrom: { tracker: 'notion', trackerId: 'notion-page' } },
+    trackerMeta: { migratedFrom: { tracker: 'github:acme/caligo', trackerId: 'legacy-page' } },
   });
   assert.equal(retargeted.tracker, 'github');
   assert.equal(retargeted.trackerId, null);
-  assert.equal(retargeted.trackerMeta.migratedFrom.trackerId, 'notion-page');
+  assert.equal(retargeted.trackerMeta.migratedFrom.trackerId, 'legacy-page');
   const ops = store.pendingOutbox(ticket.id);
   assert.equal(ops.filter((op) => op.op === 'mirror').length, 1);
 });
@@ -367,7 +367,7 @@ test('migrations are idempotent across reopen', (t) => {
   closeDb(db1);
   const db2 = openDb(baseDir);
   const store2 = createStore({ baseDir, db: db2 });
-  assert.equal(store2.getByTrackerId('notion', 'persist').title, 'Persisted');
+  assert.equal(store2.getByTrackerId('github:acme/caligo', 'persist').title, 'Persisted');
   assert.equal(db2.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
   closeDb(db2);
 });
@@ -390,8 +390,8 @@ test('createLocalTicket inserts with no trackerId and enqueues a mirror create',
 
 test('createLocalTicket assigns unique short ids and rejects a missing tracker', (t) => {
   const { store } = fixture(t);
-  const a = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'A', tracker: 'notion' });
-  const b = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'B', tracker: 'notion' });
+  const a = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'A', tracker: 'github:acme/caligo' });
+  const b = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'B', tracker: 'github:acme/caligo' });
   assert.notEqual(a.shortId, b.shortId);
   assert.throws(() => store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'C' }), /requires tracker/);
 });
@@ -399,9 +399,9 @@ test('createLocalTicket assigns unique short ids and rejects a missing tracker',
 test('ticketsByKind and childrenOf walk the hierarchy', (t) => {
   const { store } = fixture(t);
   const mission = seed(store, { trackerId: 'm', kind: 'mission', title: 'Mission' });
-  const epic1 = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 1', parentId: mission.id, tracker: 'notion' });
-  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 2', parentId: mission.id, tracker: 'notion' });
-  const feature = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Feature under epic 1', parentId: epic1.id, tracker: 'notion' });
+  const epic1 = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 1', parentId: mission.id, tracker: 'github:acme/caligo' });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Epic 2', parentId: mission.id, tracker: 'github:acme/caligo' });
+  const feature = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Feature under epic 1', parentId: epic1.id, tracker: 'github:acme/caligo' });
 
   const epics = store.ticketsByKind('caligo', 'epic');
   assert.equal(epics.length, 2);
@@ -414,12 +414,12 @@ test('ticketsByKind and childrenOf walk the hierarchy', (t) => {
 
 test('queued can transition directly to done (epic auto-completion) or cancelled (rejection)', (t) => {
   const { store } = fixture(t);
-  const epic = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Epic', status: 'queued', tracker: 'notion' });
+  const epic = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Epic', status: 'queued', tracker: 'github:acme/caligo' });
   const done = store.transition(epic.id, 'done');
   assert.equal(done.status, 'done');
   assert.ok(done.closedAt);
 
-  const rejected = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Rejected epic', status: 'in_review', tracker: 'notion' });
+  const rejected = store.createLocalTicket({ projectKey: 'p', kind: 'epic', title: 'Rejected epic', status: 'in_review', tracker: 'github:acme/caligo' });
   const cancelled = store.transition(rejected.id, 'cancelled');
   assert.equal(cancelled.status, 'cancelled');
 });

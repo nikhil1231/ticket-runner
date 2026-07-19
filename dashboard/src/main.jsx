@@ -339,9 +339,6 @@ function Projects({ data, onOpen }) {
   return (
     <>
       <h2>Projects</h2>
-      {data.registryOnly ? (
-        <div className="note">Projects are defined in a Notion project registry, which the dashboard cannot read offline. Add a local <span className="mono">projects</span> array to config.json to list them here.</div>
-      ) : null}
       {!data.projects?.length && !data.registryOnly ? <Empty>No projects configured.</Empty> : null}
       {data.projects?.length ? (
         <div className="grid cards project-cards">

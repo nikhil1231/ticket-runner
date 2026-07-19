@@ -17,7 +17,7 @@ function fixture(t) {
 }
 
 function seed(store, trackerId = 'p1') {
-  return store.upsertFromTracker({ tracker: 'notion', trackerId, projectKey: 'caligo', title: 'T', createdAt: '2026-01-01T00:00:00Z' });
+  return store.upsertFromTracker({ tracker: 'github:acme/caligo', trackerId, projectKey: 'caligo', title: 'T', createdAt: '2026-01-01T00:00:00Z' });
 }
 
 // A fake tracker recording calls; upsertMirror/comment can be scripted to fail.

@@ -123,7 +123,7 @@ function addStackedTicket(f, page, baseRef, ownFile, content) {
   return { shortId, branch, headSha, baseSha };
 }
 
-const { extractTicket } = require('../lib/ticket');
+const { extractTicket } = require('./helpers/ticket-fixture');
 
 const TO_BOARD = {
   queued: 'Not started', in_progress: 'In progress', needs_info: 'Needs info',
@@ -338,12 +338,12 @@ test('reconciliation replaces an existing generated integration branch worktree'
   assert.equal(git(integrationDir(f), ['branch', '--show-current']), 'integration/caligo');
 });
 
-test('Done promotion merges only the ticket, pushes main, and finalizes Notion', async (t) => {
+test('Done promotion merges only the ticket, pushes main, and finalizes tracker state', async (t) => {
   const f = fixture(t);
   const page = makePage('00000000-0000-0000-0000-000000000021', 'Promote me', '2026-01-01T00:00:00Z', 'Done');
   const ticketRef = addTicket(f, page, 'feature.txt', 'feature\n');
   const tracker = trackerFixture([page]);
-  const ticket = require('../lib/ticket').extractTicket(page);
+  const ticket = require('./helpers/ticket-fixture').extractTicket(page);
 
   const result = await integration.promoteTicket({ ...f, ticket, tracker, services, log: () => {} });
   assert.equal(result.status, 'merged');
@@ -517,7 +517,7 @@ test('native-sensitive ticket admission parks in Needs info to avoid review requ
     nativeSensitiveFiles: ['package.json'],
   });
   const tracker = trackerFixture([page]);
-  const ticket = require('../lib/ticket').extractTicket(page);
+  const ticket = require('./helpers/ticket-fixture').extractTicket(page);
 
   const result = await integration.admitTicket({ ...f, ticket, tracker, services, log: () => {} });
 
@@ -640,7 +640,7 @@ test('promotion leaves Done pending when origin main advances', async (t) => {
   const page = makePage('00000000-0000-0000-0000-000000000051', 'Race', '2026-01-01T00:00:00Z', 'Done');
   addTicket(f, page, 'race.txt', 'race\n');
   const tracker = trackerFixture([page]);
-  const ticket = require('../lib/ticket').extractTicket(page);
+  const ticket = require('./helpers/ticket-fixture').extractTicket(page);
   const actualBase = git(f.repoPath, ['rev-parse', 'origin/main']);
   let fetches = 0;
   const result = await integration.promoteTicket({
@@ -664,7 +664,7 @@ test('promotion recovers idempotently when the ticket commit is already on main'
   git(f.repoPath, ['merge', '--no-ff', '--no-edit', ref.branch]);
   git(f.repoPath, ['push', 'origin', 'main']);
   const tracker = trackerFixture([page]);
-  const ticket = require('../lib/ticket').extractTicket(page);
+  const ticket = require('./helpers/ticket-fixture').extractTicket(page);
 
   const result = await integration.promoteTicket({ ...f, ticket, tracker, services, log: () => {} });
   assert.equal(result.status, 'already_merged');

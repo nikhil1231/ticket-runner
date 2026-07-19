@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildReviewCandidates, parseReviewVerdict } = require('../lib/review');
-const { extractTicket } = require('../lib/ticket');
+const { extractTicket } = require('./helpers/ticket-fixture');
 const { buildPrompt } = require('../lib/run');
 
 const config = {

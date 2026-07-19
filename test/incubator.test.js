@@ -2,26 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createNotionTracker } = require('../lib/trackers/notion');
 const {
-  PLAN_HEADING, extractIncubatorTicket, recoveryStatus, splitManagedPlan, extractPlan,
+  PLAN_HEADING, recoveryStatus, splitManagedPlan, extractPlan,
   buildPlanningPrompt, updateManagedPlan, handoffTicket,
 } = require('../lib/incubator');
-
-test('extracts incubator routing and attempt fields', () => {
-  const ticket = extractIncubatorTicket({
-    id: 'abcdef01-2345-6789-abcd-ef0123456789',
-    created_time: '2026-07-05T00:00:00Z',
-    properties: {
-      Name: { title: [{ plain_text: 'Plan reminders' }] },
-      Status: { status: { name: 'Not started' } },
-      App: { select: { name: 'WorkoutTracker' } },
-      Attempts: { number: 2 },
-    },
-  });
-  assert.equal(ticket.app, 'workouttracker');
-  assert.equal(ticket.attempts, 2);
-});
 
 test('stale planning claims requeue until attempts are exhausted', () => {
   assert.equal(recoveryStatus({ attempts: 1 }, 2), 'Not started');
@@ -68,28 +52,20 @@ test('managed plan appends initially and precisely replaces on revision', async 
   assert.match(calls[1].markdown, /Revised detailed plan/);
 });
 
-test('handoff moves the same page and queues it for feature processing', async () => {
-  // Drive handoff through the real Notion adapter with a fake transport so the
-  // move + property-reset sequence is still exercised end to end.
+test('handoff promotes the incubator ticket through its tracker', async () => {
   const calls = [];
-  const transport = {
-    getDataSourceId: async (id) => { calls.push(['source', id]); return 'source-id'; },
-    movePage: async (page, source) => calls.push(['move', page, source]),
-    updatePage: async (page, properties) => calls.push(['update', page, properties]),
-    safeComment: async () => {},
+  const tracker = {
+    promoteIncubator: async (ticket, target) => calls.push(['promote', ticket.trackerId, target]),
+    mirror: async () => {},
+    comment: async () => {},
   };
-  const tracker = createNotionTracker({ transport, databaseId: 'incubator-db' });
   const ok = await handoffTicket({
     config: {},
-    ticket: { pageId: 'page-id', title: 'Ticket' },
-    board: { app: 'caligo', databaseId: 'db-id' },
+    ticket: { trackerId: '42', title: 'Ticket' },
+    board: { app: 'caligo' },
     log: () => {},
     services: { tracker },
   });
   assert.equal(ok, true);
-  assert.deepEqual(calls[0], ['source', 'db-id']);
-  assert.deepEqual(calls[1], ['move', 'page-id', 'source-id']);
-  assert.equal(calls[2][2].Status.status.name, 'Not started');
-  assert.equal(calls[2][2]['For AI'].checkbox, true);
-  assert.equal(calls[2][2].CLI.select, null);
+  assert.deepEqual(calls, [['promote', '42', 'caligo']]);
 });

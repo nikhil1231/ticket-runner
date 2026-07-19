@@ -45,7 +45,7 @@ test('reset rejects empty and unknown revisions before destructive Git runs', (t
 test('classifies runner, provider, configuration, and task failures', () => {
   assert.equal(classifyFailure(new Error('fatal: worktree reset failed'), { runner: true }).kind, 'infrastructure');
   assert.equal(classifyFailure(new Error('codex usage limit reached'), { provider: true }).kind, 'provider');
-  assert.equal(classifyFailure(new Error('NOTION_TOKEN is not set')).kind, 'configuration');
+  assert.equal(classifyFailure(new Error('GITHUB_TOKEN is not set')).kind, 'configuration');
   assert.equal(classifyFailure(new Error('tests failed'), { task: true }).kind, 'task');
   assert.equal(classifyFailure(new Error('page content is truncated or contains unsupported blocks')).kind, 'user');
 });

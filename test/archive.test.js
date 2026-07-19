@@ -68,15 +68,15 @@ test('is idempotent: a second pass archives nothing new', async (t) => {
   assert.equal(second.archived, 0);
 });
 
-test('skips non-github trackers', async (t) => {
+test('skips unsupported trackers', async (t) => {
   const { store, clock } = fixture(t);
   const ticket = store.upsertFromTracker({
-    tracker: 'notion', trackerId: 'p1', projectKey: 'caligo', title: 'T', createdAt: '2026-01-01T00:00:00Z',
+    tracker: 'legacy', trackerId: 'p1', projectKey: 'caligo', title: 'T', createdAt: '2026-01-01T00:00:00Z',
   });
   store.transition(ticket.id, 'done');
   clock.ms += 2 * DAY;
 
-  const board = { key: 'caligo', tracker: { type: 'notion' } };
+  const board = { key: 'caligo', tracker: { type: 'legacy' } };
   const result = await runArchivePass({ config: {}, board, store });
   assert.equal(result.status, 'unsupported_tracker');
   assert.ok(!store.getById(ticket.id).meta.archived);

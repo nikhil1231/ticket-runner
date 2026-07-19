@@ -1,5 +1,5 @@
 [Unit]
-Description=Notion AI ticket runner
+Description=AI ticket runner
 Wants=network-online.target
 After=network-online.target
 # Grouped with the read-only dashboard under ticket-runner.target so

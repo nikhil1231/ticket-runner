@@ -2,11 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const notion = require('./lib/notion');
 const github = require('./lib/github');
-const { extractTicket } = require('./lib/ticket');
 const { runTicket } = require('./lib/run');
-const { extractIncubatorTicket, recoveryStatus, runIncubatorTicket, handoffTicket } = require('./lib/incubator');
+const { runIncubatorTicket, handoffTicket } = require('./lib/incubator');
 const { runFlywheelPass } = require('./lib/flywheel');
 const { runArchivePass } = require('./lib/archive');
 const { forceDeploy } = require('./lib/force-deploy');
@@ -26,7 +24,7 @@ const { createStore } = require('./lib/store');
 const { getProjectTracker, getIncubatorTracker } = require('./lib/trackers');
 const { flushOutbox } = require('./lib/sync');
 const { createStoreBackedTracker } = require('./lib/store-tracker');
-const { applyTrackerCommands, upsertSnapshot } = require('./lib/cutover');
+const { applyTrackerCommands } = require('./lib/cutover');
 const { importLegacyState } = require('./lib/import-legacy');
 const bugReports = require('./lib/bug-reports');
 
@@ -68,16 +66,10 @@ function loadConfig() {
   return config;
 }
 
-function configNeedsNotion(config) {
-  if (config.projectRegistry?.databaseId) return true;
-  if (config.incubator?.databaseId || config.incubator?.tracker?.type === 'notion') return true;
-  return (config.projects || config.boards || []).some((project) => !project.tracker || project.tracker.type === 'notion');
-}
-
 function configNeedsGithub(config) {
   if (bugReports.bugConfig(config)) return true;
   if (config.incubator?.tracker?.type === 'github') return true;
-  return (config.projects || config.boards || []).some((project) => project.tracker?.type === 'github');
+  return (config.projects || []).some((project) => project.tracker?.type === 'github' || !project.tracker?.type);
 }
 
 async function withStore(config, fn) {
@@ -129,40 +121,10 @@ function trackerForStoreTicket(config, ticket, cache) {
   return realProjectTracker(board, cache);
 }
 
-function incubatorSnapshot(ticket, status = 'queued') {
-  return {
-    tracker: 'notion',
-    trackerId: ticket.pageId,
-    projectKey: ticket.projectKey || ticket.app || 'incubator',
-    kind: 'incubator',
-    title: ticket.title,
-    shortId: ticket.shortId,
-    createdAt: ticket.createdTime,
-    trackerMeta: {},
-    mirroredStatus: ticket.status,
-    status,
-  };
-}
-
 async function pollIncubatorCommands(config, store, cache) {
   const tracker = realIncubatorTracker(config, cache);
-  if (!tracker) return [];
-  const commands = [];
-  for (const page of await tracker.pagesByStatus('Not started')) {
-    const ticket = extractIncubatorTicket(page);
-    const existing = store.getByTrackerId('notion', ticket.pageId);
-    const snapshot = incubatorSnapshot(ticket, 'queued');
-    if (!existing) commands.push({ type: 'create', trackerId: ticket.pageId, snapshot });
-    else if (existing.status !== 'queued') commands.push({ type: 'requeue', trackerId: ticket.pageId, ticket: existing, snapshot });
-  }
-  for (const page of await tracker.pagesByStatus('Done')) {
-    const ticket = extractIncubatorTicket(page);
-    let existing = store.getByTrackerId('notion', ticket.pageId);
-    const snapshot = incubatorSnapshot(ticket, 'in_review');
-    if (!existing) existing = upsertSnapshot(store, snapshot);
-    commands.push({ type: 'incubator_approve', trackerId: ticket.pageId, ticket: existing, snapshot });
-  }
-  return commands;
+  if (!tracker?.pollCommands) return [];
+  return tracker.pollCommands({ store, projectKey: config.incubator?.projectKey || null, kind: 'incubator' });
 }
 
 async function pollAndApplyCommands(config, store, cache) {
@@ -193,32 +155,7 @@ async function recoverStaleClaims(config, store = null) {
     }
     return;
   }
-  for (const board of config.projects) {
-    const tracker = getProjectTracker(board, { log });
-    for (const ticket of await tracker.listStale()) {
-      if (ticket.attempts < config.maxAttempts) {
-        log(`stale claim "${ticket.title}" (${board.key || board.app}) - requeuing`);
-        await tracker.mirror(ticket, { status: 'queued' });
-        await tracker.comment(ticket, `Runner restarted mid-run (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`);
-      } else {
-        log(`stale claim "${ticket.title}" (${board.key || board.app}) - max attempts reached, marking Failed`);
-        await tracker.mirror(ticket, { status: 'failed' });
-        await tracker.comment(ticket, `Runner restarted mid-run and max attempts (${config.maxAttempts}) reached.`);
-      }
-    }
-  }
-  const incubatorTracker = getIncubatorTracker(config, { log });
-  if (incubatorTracker) {
-    for (const page of await incubatorTracker.pagesByStatus('In progress')) {
-      const ticket = extractIncubatorTicket(page);
-      const requeue = ticket.attempts < config.maxAttempts;
-      log(`stale incubator claim "${ticket.title}" - ${requeue ? 'requeuing' : 'marking Failed'}`);
-      await incubatorTracker.mirror(ticket, { status: requeue ? 'queued' : 'failed' });
-      await incubatorTracker.comment(ticket, requeue
-        ? `Runner restarted during planning (attempt ${ticket.attempts}/${config.maxAttempts}). Requeued.`
-        : `Runner restarted during planning and max attempts (${config.maxAttempts}) were reached.`);
-    }
-  }
+  throw new Error('recoverStaleClaims requires a local ticket store');
 }
 
 async function processStoreActions(config, store, actions, cache) {
@@ -496,9 +433,6 @@ async function healthcheck(config) {
       }
     }
   }
-  if ((config.projects || []).some((project) => project.tracker?.type === 'notion') || config.incubator?.tracker?.type === 'notion' || config.incubator?.databaseId) {
-    await notion.getCurrentBot();
-  }
   for (const board of config.projects || []) {
     if (board.tracker?.type === 'github') {
       await getProjectTracker(board, { log }).healthcheck();
@@ -547,15 +481,9 @@ async function cleanup(config) {
   }
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.json'))) {
     const meta = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-    let status;
-    try {
-      const page = await notion.getPage(meta.pageId);
-      status = extractTicket(page).status;
-    } catch (e) {
-      log(`skipping ${meta.branch}: cannot fetch ticket (${e.message})`);
-      continue;
-    }
-    if (status === 'Done') {
+    const ticket = config.store?.getByShortId?.(meta.shortId || path.basename(file, '.json'));
+    const status = ticket?.status || meta.status;
+    if (status === 'done') {
       const board = findProject(config, meta.projectKey || meta.app);
       let headSha = meta.headSha;
       try {
@@ -600,7 +528,7 @@ async function pushCmd(config, shortId, channelOverride) {
     throw new Error(`isolated push only supports eas-update projects (project "${meta.projectKey || meta.app}" uses ${publisher.type || 'none'})`);
   }
   if (!channel) {
-    throw new Error(`no EAS channel configured for project "${meta.projectKey || meta.app}" (set publisher channel or pass one)`);
+    throw new Error(`no EAS channel configured for project "${meta.projectKey || meta.app}" (set publisher channelpass one)`);
   }
   const res = eas.pushUpdate({ worktreeDir: meta.dir, appDir: board.workdir || board.appDir || '.', channel, message: `${board.scope}: ${meta.title} [${meta.branch}]`, log });
   if (!res.ok) throw new Error(`EAS push failed: ${res.error || 'unknown error'}`);
@@ -640,13 +568,13 @@ function checkForSelfUpdate(config) {
 
 async function main() {
   loadEnv();
-  // `db` introspection is purely local — no Notion token or project resolution needed.
+  // `db` introspection is purely local: no tracker tokenproject resolution needed.
   if (process.argv[2] === 'db') {
     dbCommand(process.argv[3]);
     return;
   }
   // `dashboard` is a read-only local view; like `db` it must not require any
-  // tracker token or reach out to Notion/GitHub to resolve projects.
+  // tracker tokenreach out to GitHub to resolve projects.
   if (process.argv[2] === 'dashboard') {
     const config = loadConfig();
     const port = Number(process.argv[3]) || Number(process.env.DASHBOARD_PORT) || 4600;
@@ -657,13 +585,6 @@ async function main() {
     return;
   }
   const config = loadConfig();
-  if (configNeedsNotion(config)) {
-    if (!process.env.NOTION_TOKEN) {
-      console.error('NOTION_TOKEN is not set. Copy .env.example to .env and fill it in.');
-      process.exit(1);
-    }
-    notion.setToken(process.env.NOTION_TOKEN);
-  }
   if (configNeedsGithub(config)) {
     if (!process.env.GITHUB_TOKEN) {
       console.error('GITHUB_TOKEN is not set for a GitHub tracker project.');
@@ -671,7 +592,7 @@ async function main() {
     }
     github.setToken(process.env.GITHUB_TOKEN);
   }
-  await resolveProjects(config, notion);
+  await resolveProjects(config);
   if (configNeedsGithub(config)) {
     if (!process.env.GITHUB_TOKEN) {
       console.error('GITHUB_TOKEN is not set for a GitHub tracker project.');
@@ -693,7 +614,7 @@ async function main() {
   } else if (cmd === 'push') {
     await withOperationLock(baseDir, () => pushCmd(config, process.argv[3], process.argv[4]));
   } else if (cmd === 'cleanup') {
-    await withOperationLock(baseDir, () => cleanup(config));
+    await withOperationLock(baseDir, () => withStore(config, () => cleanup(config)));
   } else if (cmd === 'reconcile') {
     const app = process.argv[3];
     if (app && !config.projects.some((board) => board.key === app || board.app === app)) throw new Error(`unknown project: ${app}`);
