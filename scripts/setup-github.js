@@ -13,6 +13,8 @@ const LABELS = {
 };
 const STATUS_OPTIONS = ['Not started', 'In progress', 'Needs info', 'In review', 'Testing', 'Done', 'Failed', 'Cancelled'];
 const STATUS_COLORS = ['GRAY', 'BLUE', 'YELLOW', 'ORANGE', 'PURPLE', 'GREEN', 'RED', 'PINK'];
+const PRIORITY_OPTIONS = ['High', 'Medium', 'Low'];
+const PRIORITY_COLORS = ['RED', 'YELLOW', 'BLUE'];
 
 function loadEnv() {
   const envPath = path.join(baseDir, '.env');
@@ -123,6 +125,24 @@ async function createTextField(projectId, name) {
   return data.createProjectV2Field.projectV2Field;
 }
 
+async function createSingleSelectField(projectId, name, options, colors) {
+  const data = await github.graphql(`
+    mutation CreateSingleSelectField($projectId: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+      createProjectV2Field(input: { projectId: $projectId, name: $name, dataType: SINGLE_SELECT, singleSelectOptions: $options }) {
+        projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } }
+      }
+    }`, {
+    projectId,
+    name,
+    options: options.map((option, index) => ({
+      name: option,
+      color: colors[index % colors.length],
+      description: '',
+    })),
+  });
+  return data.createProjectV2Field.projectV2Field;
+}
+
 // Replace a single-select field's options wholesale. Passing options without
 // ids replaces the whole set (drops GitHub's default Todo/In Progress/Done).
 async function setStatusOptions(fieldId) {
@@ -138,6 +158,25 @@ async function setStatusOptions(fieldId) {
     options: STATUS_OPTIONS.map((option, index) => ({
       name: option,
       color: STATUS_COLORS[index % STATUS_COLORS.length],
+      description: '',
+    })),
+  });
+  return data.updateProjectV2Field.projectV2Field;
+}
+
+async function setPriorityOptions(fieldId) {
+  const data = await github.graphql(`
+    mutation SetPriorityOptions($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+      updateProjectV2Field(input: { fieldId: $fieldId, singleSelectOptions: $options }) {
+        projectV2Field {
+          ... on ProjectV2SingleSelectField { id name options { id name } }
+        }
+      }
+    }`, {
+    fieldId,
+    options: PRIORITY_OPTIONS.map((option, index) => ({
+      name: option,
+      color: PRIORITY_COLORS[index % PRIORITY_COLORS.length],
       description: '',
     })),
   });
@@ -161,6 +200,14 @@ async function ensureStatusField(projectId, fields) {
   return setStatusOptions(status.id);
 }
 
+async function ensurePriorityField(projectId, fields) {
+  const priority = fields.find((field) => field.name === 'Priority' && Array.isArray(field.options));
+  if (!priority) return createSingleSelectField(projectId, 'Priority', PRIORITY_OPTIONS, PRIORITY_COLORS);
+  const names = new Set((priority.options || []).map((option) => option.name));
+  if (PRIORITY_OPTIONS.every((name) => names.has(name))) return priority;
+  return setPriorityOptions(priority.id);
+}
+
 async function setup({ owner, repo, title, assignee = 'ticket-runner-bot' }) {
   await deleteLabel(owner, repo, 'for-ai');
   for (const [name, description] of Object.entries(LABELS)) {
@@ -170,6 +217,7 @@ async function setup({ owner, repo, title, assignee = 'ticket-runner-bot' }) {
   await linkRepo(project.id, await repoNodeId(owner, repo));
   let fields = await projectFields(project.id);
   const status = await ensureStatusField(project.id, fields);
+  await ensurePriorityField(project.id, fields);
   fields = await projectFields(project.id);
   let engine = fields.find((field) => field.name === 'Engine');
   if (!engine) {
@@ -231,4 +279,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { setup, checkOwnerMatch, STATUS_OPTIONS, LABELS };
+module.exports = { setup, checkOwnerMatch, STATUS_OPTIONS, PRIORITY_OPTIONS, LABELS };

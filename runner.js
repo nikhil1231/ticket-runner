@@ -343,7 +343,7 @@ async function tick(config, { dryRun = false } = {}) {
   }
   lastQueueWasEmpty = false;
   queueEmptyPolls = 0;
-  log(`queue (${candidates.length}): ${candidates.map((ticket) => `"${ticket.title}" [${ticket.kind}/${ticket.projectKey || 'no project'}, attempt ${ticket.attempts}]`).join('; ')}`);
+  log(`queue (${candidates.length}): ${candidates.map((ticket) => `"${ticket.title}" [${ticket.kind}/${ticket.projectKey || 'no project'}, ${ticket.priority || 'Medium'}, attempt ${ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
     log(`dry run - would claim "${candidates[0].title}"`);
     return;

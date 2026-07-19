@@ -100,6 +100,7 @@ function fakeTransport() {
               repository: { nameWithOwner: issue.repoNameWithOwner || 'acme/widgets' },
             },
             fieldValueByName: { name: issue.projectStatus || 'Not started' },
+            priority: issue.projectPriority === undefined ? null : { name: issue.projectPriority },
           }));
         // Extra project items that live on the shared board but belong to another
         // repo (and so are not in this repo's REST issue list).
@@ -116,6 +117,7 @@ function fakeTransport() {
               repository: { nameWithOwner: item.repoNameWithOwner },
             },
             fieldValueByName: { name: item.projectStatus || 'Not started' },
+            priority: item.projectPriority === undefined ? null : { name: item.projectPriority },
           });
         }
         return { node: { items: { nodes } } };
@@ -294,6 +296,42 @@ test('pollCommands requeues an approved ticket from the board status even when t
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'requeue');
   assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands refreshes priority from GitHub Project field changes', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(12, {
+    number: 12,
+    node_id: 'ISSUE_12',
+    title: 'Priority ticket',
+    body: 'Brief',
+    labels: [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Not started',
+    projectPriority: 'High',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets',
+    trackerId: '12',
+    projectKey: 'widgets',
+    title: 'Priority ticket',
+    priority: 'Low',
+    status: 'queued',
+    mirroredStatus: 'Not started',
+  });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'refresh_intent');
+  assert.equal(commands[0].ticket.id, existing.id);
+  assert.equal(commands[0].snapshot.priority, 'High');
+  applyTrackerCommands({ store, commands });
+  assert.equal(store.getById(existing.id).priority, 'High');
 });
 
 test('pollCommands does not requeue when the board still matches the last mirrored status (mirror lag)', async (t) => {

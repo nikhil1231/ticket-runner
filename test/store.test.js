@@ -80,6 +80,31 @@ test('claimNext is atomic: two claims return different tickets, oldest first', (
   assert.equal(store.claimNext(), null);
 });
 
+test('claimNext orders by priority before oldest-first fallback', (t) => {
+  const { store } = fixture(t);
+  seed(store, { trackerId: 'old-low', title: 'Old low', priority: 'Low', createdAt: '2026-01-01T00:00:00Z' });
+  seed(store, { trackerId: 'new-high', title: 'New high', priority: 'High', createdAt: '2026-01-03T00:00:00Z' });
+  seed(store, { trackerId: 'old-medium', title: 'Old medium', createdAt: '2026-01-02T00:00:00Z' });
+  seed(store, { trackerId: 'new-medium', title: 'New medium', priority: 'unknown', createdAt: '2026-01-04T00:00:00Z' });
+
+  assert.deepEqual(store.readyTickets().map((ticket) => [ticket.title, ticket.priority]), [
+    ['New high', 'High'],
+    ['Old medium', 'Medium'],
+    ['New medium', 'Medium'],
+    ['Old low', 'Low'],
+  ]);
+  assert.equal(store.claimNext().title, 'New high');
+});
+
+test('upsertFromTracker refreshes priority for existing tickets', (t) => {
+  const { store } = fixture(t);
+  const ticket = seed(store, { trackerId: 'p', priority: 'Low' });
+  assert.equal(ticket.priority, 'Low');
+  const updated = seed(store, { trackerId: 'p', priority: 'High' });
+  assert.equal(updated.id, ticket.id);
+  assert.equal(updated.priority, 'High');
+});
+
 test('claimNext respects projectKey filter', (t) => {
   const { store } = fixture(t);
   seed(store, { trackerId: 'a', projectKey: 'alpha' });
