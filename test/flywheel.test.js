@@ -452,6 +452,33 @@ test('one-shot (non-continuous) mode idles instead of regenerating when all epic
   assert.ok(missionComments.some((op) => /Update the mission body/.test(op.payload.text)));
 });
 
+test('Perpetual mission tag regenerates epics even when project continuous mode is off', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const mission = seedMission(store, { trackerMeta: { tags: ['Perpetual'] } });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Shipped epic', parentId: mission.id, status: 'done', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, mission);
+
+  const spawnEngine = scriptedSpawnEngine([
+    { lastMessage: ticketsMessage('epics', [{ title: 'Next perpetual improvement', summary: 'S'.repeat(60) }]) },
+  ]);
+  const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.created, 1);
+  assert.equal(spawnEngine.calls.length, 1);
+  assert.equal(store.pendingOutbox(mission.id).filter((op) => /Update the mission body/.test(op.payload.text)).length, 0);
+});
+
+test('reconcileEpics does not post one-shot idle notices for Perpetual missions', (t) => {
+  const { store } = fixture(t);
+  const mission = seedMission(store, { trackerMeta: { tags: ['perpetual'] } });
+  const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Only epic', parentId: mission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  store.transition(epic.id, 'cancelled');
+
+  reconcileEpics({ store, board: board() });
+  const missionComments = store.pendingOutbox(mission.id).filter((op) => op.op === 'comment');
+  assert.equal(missionComments.length, 0);
+});
+
 test('EPIC_COMPLETE with no open children closes the epic and rotates', async (t) => {
   const { store, baseDir } = fixture(t);
   const mission = seedMission(store);

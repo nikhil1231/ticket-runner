@@ -63,6 +63,23 @@ async function ensureSelectOptions(databaseId, propertyName, options) {
   return dataSource(databaseId);
 }
 
+async function ensureMultiSelectOptions(databaseId, propertyName, options) {
+  let source = await dataSource(databaseId);
+  const multiSelect = source.properties[propertyName]?.multi_select;
+  if (!multiSelect) return source;
+  const existing = new Set(multiSelect.options.map((option) => option.name));
+  const additions = options.filter((option) => !existing.has(option.name));
+  if (!additions.length) return source;
+  await request('PATCH', `/data_sources/${source.id}`, {
+    properties: {
+      [propertyName]: {
+        multi_select: { options: [...multiSelect.options.map(({ id }) => ({ id })), ...additions] },
+      },
+    },
+  });
+  return dataSource(databaseId);
+}
+
 const KIND_OPTIONS = [
   { name: 'feature', color: 'blue' },
   { name: 'query', color: 'gray' },
@@ -71,14 +88,20 @@ const KIND_OPTIONS = [
   { name: 'mission', color: 'red' },
 ];
 
+const TAG_OPTIONS = [
+  { name: 'Perpetual', color: 'green' },
+];
+
 async function setupAppBoard(board) {
   await addProperties(board.databaseId, {
     'Last agent': { rich_text: {} },
     'Force deploy': { checkbox: {} },
     Kind: { select: { options: KIND_OPTIONS } },
+    Tags: { multi_select: { options: TAG_OPTIONS } },
   });
   await ensureSelectOptions(board.databaseId, 'Kind', KIND_OPTIONS);
-  console.log(`${board.key || board.app}: Last agent + Force deploy + Kind ready`);
+  await ensureMultiSelectOptions(board.databaseId, 'Tags', TAG_OPTIONS);
+  console.log(`${board.key || board.app}: Last agent + Force deploy + Kind + Tags ready`);
 }
 
 async function setupIncubator(projects) {

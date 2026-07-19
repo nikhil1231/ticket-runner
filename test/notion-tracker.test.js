@@ -16,12 +16,13 @@ function fixture(t) {
   return { store: createStore({ baseDir, db }) };
 }
 
-function page({ id, title, status, kind, createdTime = '2026-01-01T00:00:00Z' }) {
+function page({ id, title, status, kind, tags = [], createdTime = '2026-01-01T00:00:00Z' }) {
   const properties = {
     Name: { title: [{ plain_text: title }] },
     Status: { status: { name: status } },
   };
   if (kind) properties.Kind = { select: { name: kind } };
+  if (tags.length) properties.Tags = { multi_select: tags.map((name) => ({ name })) };
   return { id, url: `https://notion.so/${id}`, created_time: createdTime, properties };
 }
 
@@ -93,6 +94,19 @@ test('pollCommands prefers a page-level Kind property over the polled default', 
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'create');
   assert.equal(commands[0].snapshot.kind, 'epic');
+});
+
+test('pollCommands carries Notion page tags into tracker metadata', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.queryDatabase = async (databaseId, filter) => {
+    const isQueueFilter = filter?.and?.some((clause) => clause.or?.some((inner) => inner.status?.equals === 'Not started'));
+    if (isQueueFilter) return [page({ id: 'mission-page', title: 'Mission', status: 'Not started', kind: 'mission', tags: ['Perpetual'] })];
+    return [];
+  };
+  const tracker = createNotionTracker({ transport, databaseId: 'db-1' });
+  const commands = await tracker.pollCommands({ store, projectKey: 'caligo', kind: 'feature' });
+  assert.deepEqual(commands[0].snapshot.trackerMeta.tags, ['Perpetual']);
 });
 
 test('pollCommands emits cancel for an open ticket moved to Cancelled', async (t) => {
