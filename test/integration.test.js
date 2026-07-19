@@ -93,6 +93,36 @@ function addTicket(f, page, file, content) {
   return { shortId, branch, headSha };
 }
 
+// Add a ticket implemented on top of some `baseRef` (a predecessor's head or a
+// composite) rather than main, so its head carries that predecessor as an ancestor
+// and its recorded baseSha is that ref — the shape of a stacked ticket. `ownFile`
+// is the only file this ticket itself changes.
+function addStackedTicket(f, page, baseRef, ownFile, content) {
+  const shortId = page.id.replace(/-/g, '').slice(-12);
+  const branch = `ai/${shortId}`;
+  const baseSha = git(f.repoPath, ['rev-parse', baseRef]);
+  git(f.repoPath, ['switch', '-c', branch, baseSha]);
+  fs.writeFileSync(path.join(f.repoPath, ownFile), content);
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', `${shortId}: change`]);
+  const headSha = git(f.repoPath, ['rev-parse', 'HEAD']);
+  git(f.repoPath, ['switch', 'main']);
+  ticketState.writeMeta(f.baseDir, shortId, {
+    pageId: page.id,
+    shortId,
+    app: f.board.app,
+    branch,
+    dir: path.join(f.baseDir, 'worktrees', shortId),
+    title: page.properties.Name.title[0].plain_text,
+    createdTime: page.created_time,
+    baseSha,
+    headSha,
+    changedFiles: [ownFile],
+    nativeSensitiveFiles: [],
+  });
+  return { shortId, branch, headSha, baseSha };
+}
+
 const { extractTicket } = require('../lib/ticket');
 
 const TO_BOARD = {
@@ -400,6 +430,82 @@ test('native-sensitive detection blocks config, native, plugin, and dependency c
     'apps/caligo/package.json',
     'yarn.lock',
   ]);
+});
+
+test('promoting a stacked ticket lands only its own change, not the tickets it built on', async (t) => {
+  const f = fixture(t);
+  const basePage = makePage('00000000-0000-0000-0000-000000000201', 'Predecessor', '2026-01-01T00:00:00Z', 'Testing');
+  const predecessor = addTicket(f, basePage, 'pred.txt', 'pred\n'); // implemented off main, not yet on main
+  const page = makePage('00000000-0000-0000-0000-000000000202', 'Stacked', '2026-01-02T00:00:00Z', 'Done');
+  const ref = addStackedTicket(f, page, predecessor.branch, 'own.txt', 'own\n'); // built on the predecessor
+  const tracker = trackerFixture([page]);
+  const ticket = extractTicket(page);
+
+  const result = await integration.promoteTicket({ ...f, ticket, tracker, services, log: () => {} });
+  assert.equal(result.status, 'merged');
+  git(f.repoPath, ['fetch', 'origin', 'main']);
+  // The ticket's own change is on main...
+  assert.equal(git(f.repoPath, ['cat-file', '-e', 'origin/main:own.txt']), '');
+  // ...but the predecessor it was stacked on was NOT dragged along.
+  assert.throws(() => git(f.repoPath, ['cat-file', '-e', 'origin/main:pred.txt']));
+  // and its head is not an ancestor of main (own change replayed, not merged wholesale).
+  assert.throws(() => git(f.repoPath, ['merge-base', '--is-ancestor', ref.headSha, 'origin/main']));
+  assert.equal(ticketState.readMeta(f.baseDir, ticket.shortId), null);
+});
+
+test('reconcileBoard auto-heals a head carrying a stale ancestor instead of parking', async (t) => {
+  const f = fixture(t);
+  const older = makePage('00000000-0000-0000-0000-000000000211', 'Older', '2026-01-01T00:00:00Z');
+  addTicket(f, older, 'shared.txt', 'X\n'); // the stack changes shared.txt
+
+  // A base commit that also touches shared.txt (a stale ancestor), then a ticket whose
+  // OWN change is only bfile.txt on top of it — merging its head conflicts on shared.txt,
+  // but replaying just its own commit does not.
+  git(f.repoPath, ['switch', '-c', 'stale-base', 'main']);
+  fs.writeFileSync(path.join(f.repoPath, 'shared.txt'), 'stale\n');
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', 'stale ancestor']);
+  git(f.repoPath, ['switch', 'main']);
+  const newer = makePage('00000000-0000-0000-0000-000000000212', 'Newer', '2026-01-02T00:00:00Z');
+  addStackedTicket(f, newer, 'stale-base', 'bfile.txt', 'b\n');
+
+  const tracker = trackerFixture([older, newer]);
+  const result = await integration.reconcileBoard({ ...f, tracker, eas: { pushUpdate: () => ({ ok: true }) }, services, log: () => {} });
+
+  assert.equal(result.status, 'deployed');
+  // Both tickets made it in — the conflict was healed, not parked.
+  assert.deepEqual(result.tickets.map((item) => item.title).sort(), ['Newer', 'Older']);
+  assert.ok(!tracker.comments.some((c) => /conflicted/i.test(c.message)));
+  // The stale ancestor's shared.txt edit was stripped (X's version stands) and the ticket's own file landed.
+  assert.equal(git(integrationDir(f), ['show', 'HEAD:shared.txt']), 'X');
+  assert.equal(git(integrationDir(f), ['cat-file', '-e', 'HEAD:bfile.txt']), '');
+});
+
+test('epic promotion drops files a child pulled in from unrelated stacked work', async (t) => {
+  const f = fixture(t);
+  // A base commit standing in for unrelated stacked work (a non-child ticket's change).
+  git(f.repoPath, ['switch', '-c', 'other-work', 'main']);
+  fs.writeFileSync(path.join(f.repoPath, 'other.txt'), 'other\n');
+  git(f.repoPath, ['add', '.']);
+  git(f.repoPath, ['commit', '-m', 'unrelated work']);
+  git(f.repoPath, ['switch', 'main']);
+
+  const p1 = makePage('00000000-0000-0000-0000-000000000221', 'Child', '2026-01-01T00:00:00Z');
+  addStackedTicket(f, p1, 'other-work', 'child.txt', 'child\n'); // built on the unrelated work
+  const tracker = trackerFixture([p1]);
+  const epic = { shortId: 'epicc0000001', title: 'Epic', pageId: 'epic-c', projectKey: f.board.app };
+
+  const before = git(f.repoPath, ['rev-parse', 'origin/main']);
+  const result = await integration.promoteEpic({ ...f, epic, children: [extractTicket(p1)], tracker, services, log: () => {} });
+  assert.equal(result.status, 'merged');
+  git(f.repoPath, ['fetch', 'origin', 'main']);
+  const after = git(f.repoPath, ['rev-parse', 'origin/main']);
+  const newCommits = git(f.repoPath, ['rev-list', `${before}..${after}`]).split(/\r?\n/).filter(Boolean);
+  assert.equal(newCommits.length, 1);
+  // The child's own change landed...
+  assert.equal(git(f.repoPath, ['cat-file', '-e', `${after}:child.txt`]), '');
+  // ...but the unrelated work it was stacked on did NOT ride along into the squash.
+  assert.throws(() => git(f.repoPath, ['cat-file', '-e', `${after}:other.txt`]));
 });
 
 test('native-sensitive ticket admission parks in Needs info to avoid review requeue loops', async (t) => {

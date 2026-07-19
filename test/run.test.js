@@ -9,7 +9,8 @@ const { openDb, closeDb } = require('../lib/db');
 const { createStore } = require('../lib/store');
 const worktrees = require('../lib/worktree');
 const integration = require('../lib/integration');
-const { runTicket, buildPrompt, applyReviewOutcome, extractCommitMessage, compactAgentSummary } = require('../lib/run');
+const { execFileSync } = require('child_process');
+const { runTicket, buildPrompt, applyReviewOutcome, extractCommitMessage, compactAgentSummary, stackBaseForTestingDependencies } = require('../lib/run');
 
 function fixture(t) {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-run-'));
@@ -323,4 +324,40 @@ test('runTicket bases same-epic sibling work on the deployed testing stack', asy
   } finally {
     Object.assign(worktrees, original);
   }
+});
+
+test('stackBaseForTestingDependencies stacks on file overlap, not otherwise', (t) => {
+  const { baseDir, store } = fixture(t);
+  const repo = path.join(baseDir, 'repo');
+  fs.mkdirSync(repo);
+  const git = (args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-b', 'main']);
+  git(['config', 'user.name', 'Test']);
+  git(['config', 'user.email', 'test@example.com']);
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'base']);
+  const baseSha = git(['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(repo, 'shared.txt'), 'stack change\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'stack change']);
+  const compositeSha = git(['rev-parse', 'HEAD']);
+
+  const board = { app: 'proj', key: 'proj' };
+  store.saveStack('proj', { status: 'deployed', baseSha, compositeSha, tickets: [] });
+
+  // A ticket whose own changes (from a prior round) touch a file the stack changed
+  // is rebased onto the composite so it is written against that change.
+  const overlapping = store.createLocalTicket({ projectKey: 'proj', kind: 'feature', title: 'overlaps', status: 'queued', tracker: 'github:acme/proj' });
+  store.recordImplementation(overlapping.id, { headSha: 'a'.repeat(40), changedFiles: ['shared.txt'] });
+  assert.equal(stackBaseForTestingDependencies({ store, ticket: store.getById(overlapping.id), board, repo }), compositeSha);
+
+  // A ticket touching only disjoint files stays based on main.
+  const disjoint = store.createLocalTicket({ projectKey: 'proj', kind: 'feature', title: 'disjoint', status: 'queued', tracker: 'github:acme/proj' });
+  store.recordImplementation(disjoint.id, { headSha: 'b'.repeat(40), changedFiles: ['other.txt'] });
+  assert.equal(stackBaseForTestingDependencies({ store, ticket: store.getById(disjoint.id), board, repo }), null);
+
+  // A first-round ticket with no recorded changes yet stays based on main.
+  const fresh = store.createLocalTicket({ projectKey: 'proj', kind: 'feature', title: 'first round', status: 'queued', tracker: 'github:acme/proj' });
+  assert.equal(stackBaseForTestingDependencies({ store, ticket: store.getById(fresh.id), board, repo }), null);
 });
