@@ -185,6 +185,19 @@ test('upsertMirror labels a new epic issue with the epic label', async () => {
   assert.deepEqual(create.body.labels, ['epic']);
 });
 
+test('upsertMirror includes labels supplied by local ticket metadata', async () => {
+  const transport = fakeTransport();
+  const gh = tracker(transport);
+  await gh.upsertMirror({
+    title: 'Timer froze',
+    body: 'Report',
+    kind: 'feature',
+    trackerMeta: { labels: ['bug', 'from-app'] },
+  }, { status: 'queued' });
+  const create = transport.calls.rest.find((call) => call.method === 'POST' && call.path === '/repos/acme/widgets/issues');
+  assert.deepEqual(create.body.labels, ['bug', 'from-app']);
+});
+
 test('pollCommands emits cancel when the board moves an open ticket to Cancelled', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();

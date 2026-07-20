@@ -28,6 +28,7 @@ const { flushOutbox } = require('./lib/sync');
 const { createStoreBackedTracker } = require('./lib/store-tracker');
 const { applyTrackerCommands, upsertSnapshot } = require('./lib/cutover');
 const { importLegacyState } = require('./lib/import-legacy');
+const bugReports = require('./lib/bug-reports');
 
 const baseDir = __dirname;
 const QUEUE_EMPTY_LOG_INTERVAL_MS = 10 * 60 * 1000;
@@ -74,6 +75,7 @@ function configNeedsNotion(config) {
 }
 
 function configNeedsGithub(config) {
+  if (bugReports.bugConfig(config)) return true;
   if (config.incubator?.tracker?.type === 'github') return true;
   return (config.projects || config.boards || []).some((project) => project.tracker?.type === 'github');
 }
@@ -329,8 +331,12 @@ async function tick(config, { dryRun = false } = {}) {
     const actions = await pollAndApplyCommands(config, store, cache);
     const processed = await processStoreActions(config, store, actions, cache);
     if (processed.status === 'blocked') return processed;
+    await bugReports.importBugReports({ config, store, log });
+    await flushOutbox({ store, trackerFor, log });
+    await bugReports.syncBugReportStatuses({ config, store, log });
     const reconciled = await reconcileBoards(config, undefined, cache);
     if (reconciled.status === 'blocked') log(`stack deploy blocked for ${reconciled.blocked.map((b) => b.board).join(', ')}; continuing to claim other work`);
+    await bugReports.syncBugReportStatuses({ config, store, log });
     for (const board of config.projects) await runFlywheelPass({ config, board, store, log, services: {} });
     for (const board of config.projects) await runArchivePass({ config, board, store, log });
     await flushOutbox({ store, trackerFor, log });
@@ -392,6 +398,7 @@ async function tick(config, { dryRun = false } = {}) {
     services: { tracker: projectTrackerFacade({ store, board, cache }), store },
   });
   await flushOutbox({ store, trackerFor, log });
+  if (!dryRun) await bugReports.syncBugReportStatuses({ config, store, log });
   store.exportJsonl();
   return result;
 }

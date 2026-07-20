@@ -279,6 +279,30 @@ remains manual in v1.
 - Validation, fetch, or publish failure preserves the previous stack state and
   blocks new implementation work until reconciliation succeeds.
 
+## In-App Bug Reports
+
+The runner can poll a Firestore collection for app-submitted bug reports and
+turn each `status: "new"` document into a normal GitHub-backed ticket. Configure:
+
+```json
+{
+  "bugReports": {
+    "projectId": "firebase-project-id",
+    "collection": "bug_reports"
+  }
+}
+```
+
+Each report should include `app` (or `projectKey`) matching a configured
+project. The project must use a GitHub tracker so the runner can create a
+visibility issue. The runner uses `firebase login:list` for local Firebase CLI
+auth, so run `firebase login` on the host, and keep `GITHUB_TOKEN` configured.
+Imported bugs are tagged `bug` and `from-app`, and they build from the current
+cumulative integration stack because that is what the app user was running.
+Firestore statuses flow `new -> claimed -> fixing -> fixed` and eventually
+`shipped` or `blocked`; the runner also writes back `runnerTicketId`,
+`githubIssueUrl`, and `updateRef` when available.
+
 ## Engines
 
 - **codex** (`codex exec`): sandboxed by default; the runner commits changes.

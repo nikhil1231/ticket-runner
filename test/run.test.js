@@ -361,3 +361,36 @@ test('stackBaseForTestingDependencies stacks on file overlap, not otherwise', (t
   const fresh = store.createLocalTicket({ projectKey: 'proj', kind: 'feature', title: 'first round', status: 'queued', tracker: 'github:acme/proj' });
   assert.equal(stackBaseForTestingDependencies({ store, ticket: store.getById(fresh.id), board, repo }), null);
 });
+
+test('stackBaseForTestingDependencies always bases app bug reports on the integration stack', (t) => {
+  const { baseDir, store } = fixture(t);
+  const repo = path.join(baseDir, 'repo');
+  fs.mkdirSync(repo);
+  const git = (args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-b', 'main']);
+  git(['config', 'user.name', 'Test']);
+  git(['config', 'user.email', 'test@example.com']);
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'base']);
+  const baseSha = git(['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(repo, 'stack.txt'), 'stack\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'stack']);
+  const compositeSha = git(['rev-parse', 'HEAD']);
+  store.saveStack('proj', { status: 'deployed', baseSha, compositeSha, tickets: [] });
+
+  const ticket = store.createLocalTicket({
+    projectKey: 'proj',
+    kind: 'feature',
+    title: 'in-app bug',
+    status: 'queued',
+    tracker: 'github:acme/proj',
+    meta: { bugReport: { base: 'integration', docName: 'projects/p/databases/(default)/documents/bug_reports/1' } },
+  });
+
+  assert.equal(
+    stackBaseForTestingDependencies({ store, ticket: store.getById(ticket.id), board: { key: 'proj' }, repo }),
+    compositeSha
+  );
+});
