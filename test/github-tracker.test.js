@@ -97,9 +97,11 @@ function fakeTransport() {
               node_id: issue.node_id,
               url: issue.html_url,
               labels: { nodes: (issue.labels || []).map((label) => ({ name: label.name || label })) },
+              state: issue.state || 'OPEN',
+              assignees: { nodes: (issue.assignees || []).map((item) => ({ login: item.login || item })) },
               repository: { nameWithOwner: issue.repoNameWithOwner || 'acme/widgets' },
             },
-            fieldValueByName: { name: issue.projectStatus || 'Not started' },
+            fieldValueByName: issue.projectStatus === null ? null : { name: issue.projectStatus || 'Not started' },
             priority: issue.projectPriority === undefined ? null : { name: issue.projectPriority },
           }));
         // Extra project items that live on the shared board but belong to another
@@ -114,9 +116,11 @@ function fakeTransport() {
               node_id: item.node_id,
               url: item.html_url,
               labels: { nodes: (item.labels || []).map((label) => ({ name: label.name || label })) },
+              state: item.state || 'OPEN',
+              assignees: { nodes: (item.assignees || []).map((assignee) => ({ login: assignee.login || assignee })) },
               repository: { nameWithOwner: item.repoNameWithOwner },
             },
-            fieldValueByName: { name: item.projectStatus || 'Not started' },
+            fieldValueByName: item.projectStatus === null ? null : { name: item.projectStatus || 'Not started' },
             priority: item.projectPriority === undefined ? null : { name: item.projectPriority },
           });
         }
@@ -309,6 +313,33 @@ test('pollCommands requeues an approved ticket from the board status even when t
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'requeue');
   assert.equal(commands[0].ticket.id, existing.id);
+});
+
+test('pollCommands creates a project item issue even when the issue list is unchanged (304)', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(57, {
+    number: 57,
+    node_id: 'ISSUE_57',
+    title: 'Support richer complexity options',
+    body: 'Brief',
+    labels: [{ name: 'UI' }, { name: 'QoL' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectItemId: 'ITEM_57',
+    projectStatus: null,
+    created_at: '2026-07-21T09:38:13Z',
+    updated_at: '2026-07-21T09:38:13Z',
+  });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets' });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, 'create');
+  assert.equal(commands[0].trackerId, '57');
+  assert.equal(commands[0].snapshot.status, 'queued');
+  assert.deepEqual(commands[0].snapshot.trackerMeta.tags, ['UI', 'QoL']);
+  assert.equal(commands[0].snapshot.trackerMeta.projectItemId, 'ITEM_57');
 });
 
 test('pollCommands refreshes priority from GitHub Project field changes', async (t) => {
