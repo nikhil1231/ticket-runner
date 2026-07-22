@@ -97,6 +97,7 @@ footer{margin-top:34px;color:var(--muted);font-size:12px}
 .project-card{display:flex;flex-direction:column;min-height:0}
 .project-path{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .project-metrics{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}
+.flywheel-tag{color:var(--c2);border-color:color-mix(in srgb,var(--c2) 55%,var(--hair));background:color-mix(in srgb,var(--c2) 10%,var(--surface));font-weight:700}
 .project-structure-block{min-width:0}
 .project-structure-list{margin-top:5px;max-height:180px;overflow:auto;border-top:1px solid var(--grid)}
 .project-structure-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;border-top:1px solid var(--grid);padding:7px 0;min-width:0}

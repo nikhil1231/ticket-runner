@@ -106,7 +106,14 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   fs.mkdirSync(invDir, { recursive: true });
   fs.writeFileSync(path.join(invDir, 'stderr.log'), 'diff...\ntokens used\n2,500\n');
 
-  const { server } = await startServer({}, { baseDir, port: 0, restart: () => ({ ok: true }) });
+  const { server } = await startServer({
+    projects: [{
+      key: 'widgets',
+      repoPath: '.',
+      tracker: { type: 'github', owner: 'acme', repo: 'widgets' },
+      flywheel: { enabled: true, continuous: true, maxEpics: 3 },
+    }],
+  }, { baseDir, port: 0, restart: () => ({ ok: true }) });
   t.after(() => server.close());
   const port = server.address().port;
 
@@ -125,6 +132,10 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   assert.equal(data.body.store.projectFlowByProject.widgets.moving, 4);
   assert.equal(data.body.store.projectStructure.widgets.missions[0].shortId, mission.shortId);
   assert.equal(data.body.store.projectStructure.widgets.epics[0].shortId, epic.shortId);
+  const project = data.body.projects.find((item) => item.key === 'widgets');
+  assert.equal(project.flywheelEnabled, true);
+  assert.equal(project.flywheelContinuous, true);
+  assert.equal(project.flywheelMaxEpics, 3);
   assert.match(data.body.dashboard.url, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(data.body.dashboard.port, port);
   assert.equal(data.body.dashboard.pid, process.pid);

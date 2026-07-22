@@ -364,6 +364,12 @@ function Projects({ data, onOpen }) {
                   <span className="chip">{flow.queued || 0} queued</span>
                   <span className={(flow.blocked || 0) ? 'chip warn' : 'chip'}>{flow.blocked || 0} blocked</span>
                   <span className="chip">sync {store.totals?.outboxPending || 0}</span>
+                  {project.flywheelEnabled ? (
+                    <span className="tag flywheel-tag" title={project.flywheelContinuous ? 'Flywheel continuously refills approved work' : 'Flywheel decomposes this project mission'}>
+                      <Dot color="var(--c2)" />
+                      flywheel{project.flywheelContinuous ? ' continuous' : ''}{project.flywheelMaxEpics ? ' / ' + project.flywheelMaxEpics + ' epics' : ''}
+                    </span>
+                  ) : null}
                   {stack ? (
                     <span className="tag" title="testing stack">
                       <Dot color={stack.status === 'deployed' ? 'var(--good)' : stack.status === 'blocked' ? 'var(--critical)' : 'var(--muted)'} />
