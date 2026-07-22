@@ -320,66 +320,79 @@ async function reconcileBoards(config, onlyApp, cache = trackerCache()) {
   return blocked.length ? { status: 'blocked', blocked } : { status: 'ok' };
 }
 
-async function tick(config, { dryRun = false } = {}) {
-  if (!config.store) return withStore(config, (store) => tick(config, { dryRun, store }));
-  const store = config.store;
-  const cache = trackerCache();
-  const trackerFor = (ticket) => trackerForStoreTicket(config, ticket, cache);
+function orderedProjects(config, store, key) {
+  const projects = config.projects || [];
+  const last = store.getKv(key, null);
+  const index = projects.findIndex((board) => (board.key || board.app) === last);
+  if (index < 0) return projects;
+  return [...projects.slice(index + 1), ...projects.slice(0, index + 1)];
+}
 
-  if (!dryRun) {
-    await flushOutbox({ store, trackerFor, log });
-    const actions = await pollAndApplyCommands(config, store, cache);
-    const processed = await processStoreActions(config, store, actions, cache);
-    if (processed.status === 'blocked') return processed;
-    await bugReports.importBugReports({ config, store, log });
-    await flushOutbox({ store, trackerFor, log });
-    await bugReports.syncBugReportStatuses({ config, store, log });
-    const reconciled = await reconcileBoards(config, undefined, cache);
-    if (reconciled.status === 'blocked') log(`stack deploy blocked for ${reconciled.blocked.map((b) => b.board).join(', ')}; continuing to claim other work`);
-    await bugReports.syncBugReportStatuses({ config, store, log });
-    for (const board of config.projects) await runFlywheelPass({ config, board, store, log, services: {} });
-    for (const board of config.projects) await runArchivePass({ config, board, store, log });
-    await flushOutbox({ store, trackerFor, log });
+function flywheelResultMadeProgress(result, readyBefore, readyAfter) {
+  return readyAfter > readyBefore
+    || result?.status === 'epic_complete'
+    || result?.status === 'epic_testing'
+    || (result?.status === 'ok' && result.created > 0);
+}
+
+async function runFlywheelSlice({ config, store, cache, services }) {
+  const runFlywheel = services.runFlywheelPass || runFlywheelPass;
+  const key = 'flywheel:last-project';
+  let fallback = null;
+  for (const board of orderedProjects(config, store, key)) {
+    const projectKey = board.key || board.app;
+    const readyBefore = store.readyTickets().length;
+    const result = await runFlywheel({ config, board, store, log, services: services.flywheelServices || {} });
+    const readyAfter = store.readyTickets().length;
+    if (!fallback || !['disabled', 'no_mission', 'cooldown'].includes(result?.status)) fallback = result;
+    if (flywheelResultMadeProgress(result, readyBefore, readyAfter)) {
+      store.setKv(key, projectKey);
+      return result;
+    }
   }
-  const candidates = store.readyTickets();
+  return fallback || { status: 'idle' };
+}
+
+async function claimAndRunReadyTicket({ config, store, cache, trackerFor, dryRun = false, services }) {
+  const flush = services.flushOutbox || flushOutbox;
+  const syncBugStatuses = services.syncBugReportStatuses || bugReports.syncBugReportStatuses;
+  const candidates = typeof store.fairReadyTickets === 'function' ? store.fairReadyTickets() : store.readyTickets();
   if (!candidates.length) {
     logQueueEmpty(config);
-    if (!dryRun) {
-      await flushOutbox({ store, trackerFor, log });
-      store.exportJsonl();
-    }
-    return;
+    return null;
   }
   lastQueueWasEmpty = false;
   queueEmptyPolls = 0;
   log(`queue (${candidates.length}): ${candidates.map((ticket) => `"${ticket.title}" [${ticket.kind}/${ticket.projectKey || 'no project'}, ${ticket.priority || 'Medium'}, attempt ${ticket.attempts}]`).join('; ')}`);
   if (dryRun) {
     log(`dry run - would claim "${candidates[0].title}"`);
-    return;
+    return { status: 'dry_run' };
   }
-  const ticket = store.claimNext();
-  if (!ticket) return;
+
+  const ticket = store.claimTicket(candidates[0].id);
+  if (!ticket) return null;
   // Make externally-visible state catch up before a long implementation run.
   // Without this, the dashboard shows the local claim immediately, but GitHub
   // can remain "Not started" until the run finishes and the next tick flushes.
-  await flushOutbox({ store, trackerFor, log });
+  await flush({ store, trackerFor, log });
   if (ticket.kind === 'incubator') {
     const board = findProject(config, ticket.projectKey || ticket.app);
     const tracker = incubatorTrackerFacade({ store, config, cache });
     if (!tracker) {
       store.transition(ticket.id, 'failed');
       store.enqueueComment(ticket.id, 'Incubator tracker is not configured; this planning ticket cannot run.');
-      await flushOutbox({ store, trackerFor, log });
+      await flush({ store, trackerFor, log });
       return { status: 'failed' };
     }
     if (!board) {
       await tracker.mirror(ticket, { status: 'needs_info' });
       await tracker.comment(ticket, 'Select a Project, then return this ticket to Not started.');
-      await flushOutbox({ store, trackerFor, log });
-      return;
+      await flush({ store, trackerFor, log });
+      return { status: 'needs_info' };
     }
-    const result = await runIncubatorTicket({ config, board, ticket, log, services: { tracker, store } });
-    await flushOutbox({ store, trackerFor, log });
+    const runIncubator = services.runIncubatorTicket || runIncubatorTicket;
+    const result = await runIncubator({ config, board, ticket, log, services: { tracker, store } });
+    await flush({ store, trackerFor, log });
     store.exportJsonl();
     return result;
   }
@@ -387,20 +400,65 @@ async function tick(config, { dryRun = false } = {}) {
   if (!board) {
     store.transition(ticket.id, 'failed');
     store.enqueueComment(ticket.id, `Project "${ticket.projectKey}" is not configured.`);
-    await flushOutbox({ store, trackerFor, log });
+    await flush({ store, trackerFor, log });
     return { status: 'failed' };
   }
-  const result = await runTicket({
+  const runFeature = services.runTicket || runTicket;
+  const tracker = services.projectTrackerFacade
+    ? services.projectTrackerFacade({ store, board, cache })
+    : projectTrackerFacade({ store, board, cache });
+  const result = await runFeature({
     config,
     board,
     ticket,
     log,
-    services: { tracker: projectTrackerFacade({ store, board, cache }), store },
+    services: { tracker, store },
   });
-  await flushOutbox({ store, trackerFor, log });
-  if (!dryRun) await bugReports.syncBugReportStatuses({ config, store, log });
+  await flush({ store, trackerFor, log });
+  await syncBugStatuses({ config, store, log });
   store.exportJsonl();
   return result;
+}
+
+async function tick(config, { dryRun = false, services = {} } = {}) {
+  if (!config.store) return withStore(config, () => tick(config, { dryRun, services }));
+  const store = config.store;
+  const cache = trackerCache();
+  const trackerFor = (ticket) => trackerForStoreTicket(config, ticket, cache);
+  const flush = services.flushOutbox || flushOutbox;
+  const pollCommands = services.pollAndApplyCommands || pollAndApplyCommands;
+  const processActions = services.processStoreActions || processStoreActions;
+  const importBugs = services.importBugReports || bugReports.importBugReports;
+  const syncBugStatuses = services.syncBugReportStatuses || bugReports.syncBugReportStatuses;
+  const reconcile = services.reconcileBoards || reconcileBoards;
+  const archive = services.runArchivePass || runArchivePass;
+
+  if (dryRun) {
+    return claimAndRunReadyTicket({ config, store, cache, trackerFor, dryRun, services });
+  }
+
+  await flush({ store, trackerFor, log });
+  const actions = await pollCommands(config, store, cache);
+  const processed = await processActions(config, store, actions, cache);
+  if (processed.status === 'blocked') return processed;
+  await importBugs({ config, store, log });
+  await flush({ store, trackerFor, log });
+  await syncBugStatuses({ config, store, log });
+
+  let result = await claimAndRunReadyTicket({ config, store, cache, trackerFor, services });
+  if (result) return result;
+
+  await runFlywheelSlice({ config, store, cache, services });
+  result = await claimAndRunReadyTicket({ config, store, cache, trackerFor, services });
+  if (result) return result;
+
+  const reconciled = await reconcile(config, undefined, cache);
+  if (reconciled.status === 'blocked') log(`stack deploy blocked for ${reconciled.blocked.map((b) => b.board).join(', ')}; continuing to claim other work`);
+  await syncBugStatuses({ config, store, log });
+  for (const board of config.projects || []) await archive({ config, board, store, log });
+  await flush({ store, trackerFor, log });
+  store.exportJsonl();
+  return reconciled.status === 'blocked' ? reconciled : undefined;
 }
 
 function heartbeat(config, phase = 'ready') {
@@ -692,4 +750,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { processStoreActions, pollAndApplyCommands, trackerCache };
+module.exports = { processStoreActions, pollAndApplyCommands, trackerCache, tick, claimAndRunReadyTicket, runFlywheelSlice };

@@ -22,13 +22,76 @@ function toTesting(store, id) {
   store.transition(id, 'testing');
 }
 
-function config(baseDir, store) {
+function config(baseDir, store, projects = [{ key: 'caligo', app: 'caligo', repoPath: '/repo', tracker: { type: 'github', owner: 'acme', repo: 'caligo' } }]) {
+  return { baseDir, store, projects, pollIntervalMs: 5000 };
+}
+
+function seedFeature(store, overrides = {}) {
+  return store.upsertFromTracker({
+    tracker: 'github:acme/caligo',
+    trackerId: overrides.trackerId || `issue-${Math.random().toString(16).slice(2)}`,
+    projectKey: overrides.projectKey || 'caligo',
+    kind: 'feature',
+    title: overrides.title || 'Ready work',
+    createdAt: overrides.createdAt || '2026-01-01T00:00:00Z',
+    ...overrides,
+  });
+}
+
+function quietServices(extra = {}) {
   return {
-    baseDir,
-    store,
-    projects: [{ key: 'caligo', app: 'caligo', repoPath: '/repo', tracker: { type: 'github', owner: 'acme', repo: 'caligo' } }],
+    flushOutbox: async () => {},
+    pollAndApplyCommands: async () => ({ promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [] }),
+    processStoreActions: async () => ({ status: 'ok' }),
+    importBugReports: async () => {},
+    syncBugReportStatuses: async () => {},
+    projectTrackerFacade: () => ({}),
+    ...extra,
   };
 }
+
+test('tick claims ready work before flywheel, reconciliation, or archive maintenance', async (t) => {
+  const { baseDir, store } = fixture(t);
+  seedFeature(store, { title: 'Run me now' });
+  const calls = [];
+  const result = await runner.tick(config(baseDir, store), {
+    services: quietServices({
+      runTicket: async ({ ticket }) => { calls.push(['runTicket', ticket.title]); return { status: 'ran', shortId: ticket.shortId }; },
+      runFlywheelPass: async () => { throw new Error('flywheel should not run before a ready claim'); },
+      reconcileBoards: async () => { throw new Error('reconcile should not run before a ready claim'); },
+      runArchivePass: async () => { throw new Error('archive should not run before a ready claim'); },
+    }),
+  });
+
+  assert.equal(result.status, 'ran');
+  assert.deepEqual(calls, [['runTicket', 'Run me now']]);
+});
+
+test('tick claims a ticket created by the flywheel in the same tick', async (t) => {
+  const { baseDir, store } = fixture(t);
+  const calls = [];
+  const result = await runner.tick(config(baseDir, store), {
+    services: quietServices({
+      runFlywheelPass: async ({ store: runStore, board }) => {
+        calls.push(['flywheel', board.key]);
+        runStore.createLocalTicket({
+          projectKey: board.key,
+          kind: 'feature',
+          title: 'Fresh flywheel ticket',
+          status: 'queued',
+          tracker: 'github:acme/caligo',
+        });
+        return { status: 'ok', created: 1 };
+      },
+      runTicket: async ({ ticket }) => { calls.push(['runTicket', ticket.title]); return { status: 'ran', shortId: ticket.shortId }; },
+      reconcileBoards: async () => { throw new Error('reconcile should wait until after same-tick flywheel claims'); },
+      runArchivePass: async () => { throw new Error('archive should wait until after same-tick flywheel claims'); },
+    }),
+  });
+
+  assert.equal(result.status, 'ran');
+  assert.deepEqual(calls, [['flywheel', 'caligo'], ['runTicket', 'Fresh flywheel ticket']]);
+});
 
 test('processStoreActions: moving an epic to Done cascade-merges every Testing ticket under it and closes the epic', async (t) => {
   const { baseDir, store } = fixture(t);

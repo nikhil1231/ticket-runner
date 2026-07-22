@@ -92,6 +92,11 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   const { baseDir, db, store } = fixture(t);
   const ticket = seed(store, { trackerId: 'issue-3', shortId: 'tokrun000001', title: 'Token run' });
   const testing = seed(store, { trackerId: 'issue-4', shortId: 'testing00001', title: 'Testing run' });
+  const mission = store.createLocalTicket({ projectKey: 'widgets', kind: 'mission', title: 'Mission one', status: 'queued', tracker: 'github' });
+  const epic = store.createLocalTicket({ projectKey: 'widgets', kind: 'epic', title: 'Epic one', parentId: mission.id, status: 'queued', tracker: 'github' });
+  store.transition(mission.id, 'in_progress');
+  store.transition(epic.id, 'in_progress');
+  store.setParent(ticket.id, epic.id);
   store.transition(ticket.id, 'in_progress', { lastAgent: 'codex/gpt-5' });
   store.transition(testing.id, 'in_progress');
   store.transition(testing.id, 'testing');
@@ -111,9 +116,15 @@ test('dashboard /api/data includes a token-usage rollup parsed from runs/', asyn
   assert.equal(data.body.tokens.byProvider.codex.tokens, 2500);
   assert.equal(data.body.tokens.byPhase.implementation.tokens, 2500);
   assert.equal(data.body.store.current.running[0].shortId, 'tokrun000001');
+  assert.equal(data.body.store.current.running.some((item) => item.kind === 'mission' || item.kind === 'epic'), false);
+  assert.equal(data.body.store.current.running[0].epic.shortId, epic.shortId);
+  assert.equal(data.body.store.current.running[0].mission.shortId, mission.shortId);
   assert.equal(data.body.store.current.testing[0].shortId, 'testing00001');
   assert.equal(data.body.store.current.inFlight[0].shortId, 'tokrun000001');
-  assert.equal(data.body.store.current.projectFlow[0].moving, 2);
+  assert.equal(data.body.store.current.projectFlow[0].moving, 4);
+  assert.equal(data.body.store.projectFlowByProject.widgets.moving, 4);
+  assert.equal(data.body.store.projectStructure.widgets.missions[0].shortId, mission.shortId);
+  assert.equal(data.body.store.projectStructure.widgets.epics[0].shortId, epic.shortId);
   assert.match(data.body.dashboard.url, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(data.body.dashboard.port, port);
   assert.equal(data.body.dashboard.pid, process.pid);

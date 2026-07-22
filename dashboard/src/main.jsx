@@ -94,6 +94,18 @@ function KindBadge({ kind }) {
   );
 }
 
+function ParentLabels({ item }) {
+  const labels = [];
+  if (item?.mission) labels.push(['Mission', item.mission]);
+  if (item?.epic) labels.push(['Epic', item.epic]);
+  if (!labels.length) return null;
+  return labels.map(([label, parent]) => (
+    <span className="parent-chip" key={label + '-' + parent.shortId} title={parent.title}>
+      {label}: <span>{parent.title}</span>
+    </span>
+  ));
+}
+
 // Categorical identity color for a project, from the fixed 8-hue palette
 // defined in styles.css (--c1..--c8 + matching --cN-ink foreground). Slots are
 // assigned by sorted position in the configured project list — stable and
@@ -302,6 +314,31 @@ function TokenUsage({ tokens, onOpen }) {
   );
 }
 
+function ProjectStructureList({ title, items = [], onOpen, empty }) {
+  return (
+    <div className="project-structure-block">
+      <div className="k spaced">{title}</div>
+      {!items.length ? <div className="muted tiny-gap">{empty}</div> : (
+        <div className="project-structure-list">
+          {items.map((item) => (
+            <div className="project-structure-row" key={item.shortId}>
+              <div className="state-main">
+                <TicketLink item={item} onOpen={onOpen} />
+                <div className="state-meta">
+                  <KindBadge kind={item.kind} />
+                  <StatusTag status={item.status} />
+                  <span className="mono">{item.shortId}</span>
+                </div>
+              </div>
+              <span className="muted nowrap">{ago(item.at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Projects({ data, onOpen }) {
   const store = data.store || {};
   return (
@@ -316,14 +353,17 @@ function Projects({ data, onOpen }) {
           {data.projects.map((project) => {
             const counts = store.projectStatus?.[project.key] || {};
             const stack = (store.stacks || []).find((item) => item.project === project.key);
-            const recent = (store.completed || []).filter((item) => item.project === project.key).slice(0, 4);
+            const flow = store.projectFlowByProject?.[project.key] || { queued: counts.queued || 0, moving: (counts.in_progress || 0) + (counts.testing || 0), blocked: (counts.failed || 0) + (counts.needs_info || 0) };
+            const structure = store.projectStructure?.[project.key] || { missions: [], epics: [] };
             return (
-              <div className="card" key={project.key}>
+              <div className="card project-card" key={project.key}>
                 <h3><ProjectTag project={project.key} /><span className="tag">{project.trackerType}</span></h3>
-                <div className="k mono">{project.repoPath}</div>
-                <div className="rowline spaced">
-                  <span className="chip">publish: {project.publisherType}{project.easChannel ? ` (${project.easChannel})` : ''}</span>
-                  <span className="chip">{project.integrationMode}{project.integrationEnabled ? '' : ' - off'}</span>
+                <div className="k mono project-path">{project.repoPath}</div>
+                <div className="project-metrics">
+                  <span className="chip">{flow.moving || 0} moving</span>
+                  <span className="chip">{flow.queued || 0} queued</span>
+                  <span className={(flow.blocked || 0) ? 'chip warn' : 'chip'}>{flow.blocked || 0} blocked</span>
+                  <span className="chip">sync {store.totals?.outboxPending || 0}</span>
                   {stack ? (
                     <span className="tag" title="testing stack">
                       <Dot color={stack.status === 'deployed' ? 'var(--good)' : stack.status === 'blocked' ? 'var(--critical)' : 'var(--muted)'} />
@@ -331,18 +371,13 @@ function Projects({ data, onOpen }) {
                     </span>
                   ) : null}
                 </div>
+                <div className="rowline spaced">
+                  <span className="chip">publish: {project.publisherType}{project.easChannel ? ' (' + project.easChannel + ')' : ''}</span>
+                  <span className="chip">{project.integrationMode}{project.integrationEnabled ? '' : ' - off'}</span>
+                </div>
                 <StatusBar counts={counts} statuses={data.statuses} />
-                <div className="k spaced">Recent completed</div>
-                {recent.length ? (
-                  <div className="recent-list">
-                    {recent.map((item) => (
-                      <div className="rowline recent-row" key={item.shortId}>
-                        <span><TicketLink item={item} onOpen={onOpen} /></span>
-                        <span className="muted nowrap">{ago(item.at)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : <div className="muted tiny-gap">Nothing completed yet</div>}
+                <ProjectStructureList title="Missions" items={structure.missions} onOpen={onOpen} empty="No active missions." />
+                <ProjectStructureList title="Epics" items={structure.epics} onOpen={onOpen} empty="No active epics." />
               </div>
             );
           })}
@@ -512,6 +547,7 @@ function MiniTicketList({ items = [], onOpen, empty }) {
               <ProjectTag project={item.project} />
               <KindBadge kind={item.kind} />
               <StatusTag status={item.status} />
+              <ParentLabels item={item} />
               {item.blocked ? <BlockageTag role="blocked" /> : null}
               {item.agent ? <span className="mono">{item.agent}</span> : null}
             </div>
@@ -651,6 +687,7 @@ function InFlightPanel({ items = [], onOpen }) {
                 <ProjectTag project={active.project} />
                 <KindBadge kind={active.kind} />
                 <StatusTag status={active.status} />
+                <ParentLabels item={active} />
                 {active.agent ? <span className="mono">{active.agent}</span> : null}
                 <span className="muted nowrap">{ago(active.at)}</span>
               </div>
@@ -667,65 +704,21 @@ function CurrentState({ data, onOpen }) {
   const store = data.store || {};
   const current = store.current || {};
   const byStatus = store.byStatus || {};
-  const stackSummary = current.stackSummary || {};
-  const syncColor = store.totals?.outboxParked ? 'var(--warning)' : store.totals?.outboxPending ? 'var(--c3)' : 'var(--good)';
   const running = current.running || current.inFlight || [];
   const testing = current.testing || [];
 
   return (
     <>
       <h2>Current state</h2>
-      <div className="state-grid">
+      <div className="state-grid compact-state-grid">
         <InFlightPanel items={running} onOpen={onOpen} />
+        <section className="card state-card">
+          <h3><span>Up next</span><span className="tag">{byStatus.queued || 0} queued</span></h3>
+          <MiniTicketList items={current.queued?.slice(0, 8)} onOpen={onOpen} empty="Queue is empty." />
+        </section>
         <section className="card state-card">
           <h3><span>Testing</span><span className="tag">{testing.length} testing</span></h3>
           <MiniTicketList items={testing} onOpen={onOpen} empty="No tickets are currently in testing." />
-        </section>
-        <section className="card state-card">
-          <h3><span>Up next</span><span className="tag">{byStatus.queued || 0} queued</span></h3>
-          <MiniTicketList items={current.queued?.slice(0, 5)} onOpen={onOpen} empty="Queue is empty." />
-        </section>
-        <section className="card state-card">
-          <h3><span>Just finished</span><span className="tag">{byStatus.done || 0} done</span></h3>
-          <MiniTicketList items={current.recentlyCompleted?.slice(0, 5)} onOpen={onOpen} empty="Nothing completed yet." />
-        </section>
-        <section className="card state-card">
-          <h3><span>Project flow</span></h3>
-          {!current.projectFlow?.length ? <div className="muted tiny-gap">No active project pressure.</div> : (
-            <div className="flow-list">
-              {current.projectFlow.map((project) => (
-                <div className="flow-row" key={project.project}>
-                  <ProjectTag project={project.project} />
-                  <span className="chip">{project.moving} moving</span>
-                  <span className="chip">{project.queued} queued</span>
-                  {project.blocked ? <span className="chip warn">{project.blocked} blocked</span> : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-        <section className="card state-card">
-          <h3><span>Signals</span></h3>
-          <div className="signal-grid">
-            <div>
-              <div className="val small-val" style={{ color: (byStatus.failed || byStatus.needs_info) ? 'var(--critical)' : 'var(--good)' }}>
-                {(byStatus.failed || 0) + (byStatus.needs_info || 0)}
-              </div>
-              <div className="lab">blocked or needs info</div>
-            </div>
-            <div>
-              <div className="val small-val" style={{ color: syncColor }}>{store.totals?.outboxPending || 0}</div>
-              <div className="lab">sync ops pending</div>
-            </div>
-            <div>
-              <div className="val small-val" style={{ color: stackSummary.blocked ? 'var(--critical)' : 'var(--good)' }}>{stackSummary.deployed || 0}</div>
-              <div className="lab">stacks deployed</div>
-            </div>
-            <div>
-              <div className="val small-val">{current.reviewing?.length || 0}</div>
-              <div className="lab">in review</div>
-            </div>
-          </div>
         </section>
       </div>
     </>
@@ -1090,11 +1083,6 @@ function App() {
     }
   }, [load]);
 
-  const overview = useMemo(() => {
-    const byStatus = data?.store?.byStatus || {};
-    const active = (byStatus.queued || 0) + (byStatus.in_progress || 0) + (byStatus.in_review || 0) + (byStatus.testing || 0) + (byStatus.needs_info || 0);
-    return { byStatus, active };
-  }, [data]);
   const projectPalette = useMemo(() => buildProjectPalette(data?.projects), [data?.projects]);
 
   if (error && !data) {
@@ -1155,20 +1143,8 @@ function App() {
 
             <Blockages blockages={store.blockages} onOpen={setTicketId} />
             <NeedsInfoPanel items={store.needsInfo} blockerIds={blockerIds} onOpen={setTicketId} />
-
-            <h2>Overview</h2>
-            <div className="grid tiles">
-              <Tile value={store.totals?.tickets || 0} label="Tickets total" />
-              <Tile value={overview.active} label="Active in pipeline" />
-              <Tile value={store.blockages?.blocked?.length || 0} label="Blocked by dependency" color={store.blockages?.blocked?.length ? 'var(--critical)' : ''} />
-              <Tile value={overview.byStatus.done || 0} label="Completed" />
-              <Tile value={overview.byStatus.failed || 0} label="Failed" color={overview.byStatus.failed ? 'var(--critical)' : ''} />
-              <Tile value={(overview.byStatus.needs_info || 0) + (overview.byStatus.in_review || 0)} label="Awaiting human" />
-              <Tile value={store.totals?.outboxParked || 0} label="Parked sync ops" color={store.totals?.outboxParked ? 'var(--warning)' : ''} />
-            </div>
-
-            <CurrentState data={data} onOpen={setTicketId} />
             <Projects data={data} onOpen={setTicketId} />
+            <CurrentState data={data} onOpen={setTicketId} />
 
             <h2>Agent providers &amp; quota</h2>
             <ProviderCards providers={data.providers} />
@@ -1178,8 +1154,6 @@ function App() {
 
             <TokenUsage tokens={data.tokens} onOpen={setTicketId} />
             <Connections connections={data.connections} />
-            <NeedsAttention items={store.attention} blockerIds={blockerIds} onOpen={setTicketId} />
-            <Completed items={store.completed} onOpen={setTicketId} />
             <Activity items={store.activity} onOpen={setTicketId} />
             <footer>Store integrity: {store.integrity} - {store.totals?.outboxPending || 0} sync op(s) pending - read-only view of state/runner.db</footer>
           </>

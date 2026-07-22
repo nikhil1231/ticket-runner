@@ -73,6 +73,14 @@ function markMissionHashCurrent(store, mission) {
   store.setKv(`flywheel:mission-hash:${mission.id}`, missionHash(mission));
 }
 
+function missionCooldownKey(mission, projectKey = 'caligo') {
+  return `flywheel:cooldown:${projectKey}:${mission.id}`;
+}
+
+function missionFailuresKey(mission, projectKey = 'caligo') {
+  return `flywheel:failures:${projectKey}:${mission.id}`;
+}
+
 // ---- pure helpers ----
 
 test('extractItems parses a valid TICKETS contract and enforces bounds', () => {
@@ -211,6 +219,27 @@ test('no mission ticket is a no-op', async (t) => {
   assert.equal(result.status, 'no_mission');
 });
 
+test('flywheel skips an idle mission and decomposes the next actionable mission', async (t) => {
+  const { store, baseDir } = fixture(t);
+  const idleMission = seedMission(store, { trackerId: 'mission-idle', title: 'Waiting mission', createdAt: '2026-01-01T00:00:00Z' });
+  const actionableMission = seedMission(store, { trackerId: 'mission-action', title: 'Actionable mission', createdAt: '2026-01-02T00:00:00Z' });
+  const b = board({ flywheel: { enabled: true, continuous: true, backlogThreshold: 2, maxOpenTickets: 10, maxEpics: 1, maxTicketsPerPass: 3, cooldownMs: 900000 } });
+  store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Already proposed', parentId: idleMission.id, status: 'in_review', tracker: 'github:acme/caligo' });
+  markMissionHashCurrent(store, idleMission);
+  const spawnEngine = scriptedSpawnEngine([
+    { lastMessage: ticketsMessage('epics', [{ title: 'Fresh epic', summary: 'S'.repeat(60) }]) },
+  ]);
+
+  const result = await runFlywheelPass({ config: { baseDir }, board: b, store, services: { spawnEngine, worktrees: fakeWorktrees() } });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.created, 1);
+  assert.equal(result.missionId, actionableMission.id);
+  const epics = store.ticketsByKind('caligo', 'epic').filter((epic) => epic.parentId === actionableMission.id);
+  assert.equal(epics.length, 1);
+  assert.equal(epics[0].title, 'Fresh epic');
+});
+
 test('epic phase proposes epics under the mission when none exist yet', async (t) => {
   const { store, baseDir } = fixture(t);
   const mission = seedMission(store);
@@ -347,13 +376,13 @@ test('proposals that all dedupe against existing tickets create nothing and set 
   assert.equal(result.status, 'ok');
   assert.equal(result.created, 0);
   assert.equal(store.ticketsByKind('caligo', 'feature').length, 1);
-  assert.ok(store.getKv('flywheel:cooldown:caligo', null));
+  assert.ok(store.getKv(missionCooldownKey(mission), null));
 });
 
 test('cooldown blocks a pass from invoking the planner again', async (t) => {
   const { store, baseDir } = fixture(t);
-  seedMission(store);
-  store.setKv('flywheel:cooldown:caligo', new Date(Date.now() + 60000).toISOString());
+  const mission = seedMission(store);
+  store.setKv(missionCooldownKey(mission), new Date(Date.now() + 60000).toISOString());
   const spawnEngine = scriptedSpawnEngine([]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine } });
   assert.equal(result.status, 'cooldown');
@@ -366,7 +395,7 @@ test('needs_info from the planner comments and sets a cooldown without throwing'
   const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'NEEDS_INFO: what kind of app is this?' }]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
   assert.equal(result.status, 'needs_info');
-  assert.ok(store.getKv('flywheel:cooldown:caligo', null));
+  assert.ok(store.getKv(missionCooldownKey(mission), null));
   const comments = store.pendingOutbox(mission.id).filter((op) => op.op === 'comment');
   assert.ok(comments.some((op) => op.payload.text.includes('NEEDS_INFO')));
 });
@@ -377,18 +406,18 @@ test('exhausted planning candidates are caught, back off exponentially, and neve
   const spawnEngine = scriptedSpawnEngine([{ code: 1, lastMessage: '' }]);
   const result1 = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
   assert.equal(result1.status, 'error');
-  const cooldown1 = store.getKv('flywheel:cooldown:caligo', null);
+  const cooldown1 = store.getKv(missionCooldownKey(mission), null);
   assert.ok(cooldown1);
-  assert.equal(store.getKv('flywheel:failures:caligo', 0), 1);
+  assert.equal(store.getKv(missionFailuresKey(mission), 0), 1);
   const comments = store.pendingOutbox(mission.id).filter((op) => op.op === 'comment');
   assert.ok(comments.length >= 1);
 
   // second failure without clearing the cooldown key manually should back off further
-  store.setKv('flywheel:cooldown:caligo', new Date(0).toISOString()); // simulate cooldown elapsed
+  store.setKv(missionCooldownKey(mission), new Date(0).toISOString()); // simulate cooldown elapsed
   const spawnEngine2 = scriptedSpawnEngine([{ code: 1, lastMessage: '' }]);
   await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
-  assert.equal(store.getKv('flywheel:failures:caligo', 0), 2);
-  const cooldown2 = store.getKv('flywheel:cooldown:caligo', null);
+  assert.equal(store.getKv(missionFailuresKey(mission), 0), 2);
+  const cooldown2 = store.getKv(missionCooldownKey(mission), null);
   assert.ok(Date.parse(cooldown2) > Date.parse(cooldown1));
 });
 
@@ -484,13 +513,13 @@ test('EPIC_COMPLETE with no open children closes the epic and rotates', async (t
   const mission = seedMission(store);
   const epic = store.createLocalTicket({ projectKey: 'caligo', kind: 'epic', title: 'Covered epic', parentId: mission.id, status: 'queued', tracker: 'github:acme/caligo' });
   markMissionHashCurrent(store, mission);
-  store.setKv('flywheel:cooldown:caligo', new Date(0).toISOString()); // already elapsed; progress should clear it
+  store.setKv(missionCooldownKey(mission), new Date(0).toISOString()); // already elapsed; progress should clear it
 
   const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: existing code already delivers this scope' }]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
   assert.equal(result.status, 'epic_complete');
   assert.equal(store.getById(epic.id).status, 'done');
-  assert.equal(store.getKv('flywheel:cooldown:caligo', null), null); // progress clears the cooldown so the next epic starts promptly
+  assert.equal(store.getKv(missionCooldownKey(mission), null), null); // progress clears the cooldown so the next epic starts promptly
   const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
   assert.ok(epicComments.some((op) => /marked this epic complete/.test(op.payload.text)));
 });
@@ -503,14 +532,14 @@ test('EPIC_COMPLETE with tickets still in flight freezes the epic in Testing and
   store.transition(child.id, 'in_progress');
   store.transition(child.id, 'testing');
   markMissionHashCurrent(store, mission);
-  store.setKv('flywheel:cooldown:caligo', new Date(0).toISOString()); // already elapsed
+  store.setKv(missionCooldownKey(mission), new Date(0).toISOString()); // already elapsed
 
   const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: nothing more to add' }]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
   assert.equal(result.status, 'epic_testing');
   assert.equal(store.getById(epic.id).status, 'testing'); // frozen for human sign-off
   // Freezing is forward progress: the cooldown is cleared so the next epic starts.
-  assert.equal(store.getKv('flywheel:cooldown:caligo', null), null);
+  assert.equal(store.getKv(missionCooldownKey(mission), null), null);
   const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
   assert.ok(epicComments.some((op) => /no more tickets to add/.test(op.payload.text)));
 
@@ -532,13 +561,13 @@ test('EPIC_COMPLETE with a child still queued keeps the epic In progress until t
   // A sibling that was planned but has not had its turn on the runner yet.
   const pending = store.createLocalTicket({ projectKey: 'caligo', kind: 'feature', title: 'Still queued', parentId: epic.id, status: 'queued', tracker: 'github:acme/caligo' });
   markMissionHashCurrent(store, mission);
-  store.deleteKv('flywheel:cooldown:caligo');
+  store.deleteKv(missionCooldownKey(mission));
 
   const spawnEngine = scriptedSpawnEngine([{ lastMessage: 'EPIC_COMPLETE: nothing more to add' }]);
   const result = await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine, worktrees: fakeWorktrees() } });
   assert.equal(result.status, 'epic_waiting');
   assert.equal(store.getById(epic.id).status, 'in_progress'); // not parked while a ticket is still queued
-  assert.ok(store.getKv('flywheel:cooldown:caligo', null)); // idle back-off so the planner isn't re-asked every tick
+  assert.ok(store.getKv(missionCooldownKey(mission), null)); // idle back-off so the planner isn't re-asked every tick
   const epicComments = store.pendingOutbox(epic.id).filter((op) => op.op === 'comment');
   assert.ok(epicComments.some((op) => /still being worked/.test(op.payload.text)));
 
@@ -546,7 +575,7 @@ test('EPIC_COMPLETE with a child still queued keeps the epic In progress until t
   // in Testing on the next pass — without re-invoking the planner.
   store.transition(pending.id, 'in_progress');
   store.transition(pending.id, 'testing');
-  store.deleteKv('flywheel:cooldown:caligo');
+  store.deleteKv(missionCooldownKey(mission));
   const spawnEngine2 = scriptedSpawnEngine([]);
   await runFlywheelPass({ config: { baseDir }, board: board(), store, services: { spawnEngine: spawnEngine2, worktrees: fakeWorktrees() } });
   assert.equal(spawnEngine2.calls.length, 0);

@@ -96,6 +96,48 @@ test('claimNext orders by priority before oldest-first fallback', (t) => {
   assert.equal(store.claimNext().title, 'New high');
 });
 
+test('claimNext rotates projects within the same priority', (t) => {
+  const { store } = fixture(t);
+  seed(store, { trackerId: 'a1', projectKey: 'alpha', title: 'Alpha 1', createdAt: '2026-01-01T00:00:00Z' });
+  seed(store, { trackerId: 'a2', projectKey: 'alpha', title: 'Alpha 2', createdAt: '2026-01-02T00:00:00Z' });
+  seed(store, { trackerId: 'b1', projectKey: 'beta', title: 'Beta 1', createdAt: '2026-01-03T00:00:00Z' });
+  seed(store, { trackerId: 'b2', projectKey: 'beta', title: 'Beta 2', createdAt: '2026-01-04T00:00:00Z' });
+
+  assert.deepEqual(store.fairReadyTickets().map((ticket) => ticket.title), ['Alpha 1', 'Alpha 2', 'Beta 1', 'Beta 2']);
+  assert.equal(store.claimNext().title, 'Alpha 1');
+  assert.deepEqual(store.fairReadyTickets().map((ticket) => ticket.title), ['Beta 1', 'Beta 2', 'Alpha 2']);
+  assert.equal(store.claimNext().title, 'Beta 1');
+  assert.deepEqual(store.fairReadyTickets().map((ticket) => ticket.title), ['Alpha 2', 'Beta 2']);
+  assert.equal(store.claimNext().title, 'Alpha 2');
+  assert.equal(store.claimNext().title, 'Beta 2');
+});
+
+test('claimNext keeps priority above project rotation', (t) => {
+  const { store } = fixture(t);
+  seed(store, { trackerId: 'medium-a', projectKey: 'alpha', title: 'Medium alpha', createdAt: '2026-01-01T00:00:00Z' });
+  seed(store, { trackerId: 'high-b', projectKey: 'beta', title: 'High beta', priority: 'High', createdAt: '2026-01-03T00:00:00Z' });
+  seed(store, { trackerId: 'medium-b', projectKey: 'beta', title: 'Medium beta', createdAt: '2026-01-02T00:00:00Z' });
+
+  assert.equal(store.claimNext().title, 'High beta');
+  assert.equal(store.claimNext().title, 'Medium alpha');
+});
+
+test('claimTicket revalidates queue status and dependencies', (t) => {
+  const { store } = fixture(t);
+  const blocker = seed(store, { trackerId: 'blocker', title: 'Blocker' });
+  const blocked = seed(store, { trackerId: 'blocked', title: 'Blocked' });
+  store.addDependency(blocked.id, blocker.id);
+  store.transition(blocker.id, 'in_progress');
+
+  assert.equal(store.claimTicket(blocked.id), null);
+  assert.equal(store.claimTicket(blocker.id), null);
+
+  store.transition(blocker.id, 'testing');
+  const claimed = store.claimTicket(blocked.id);
+  assert.equal(claimed.title, 'Blocked');
+  assert.equal(claimed.status, 'in_progress');
+});
+
 test('upsertFromTracker refreshes priority for existing tickets', (t) => {
   const { store } = fixture(t);
   const ticket = seed(store, { trackerId: 'p', priority: 'Low' });
