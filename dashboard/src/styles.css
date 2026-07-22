@@ -99,9 +99,11 @@ footer{margin-top:34px;color:var(--muted);font-size:12px}
 .project-metrics{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}
 .flywheel-tag{color:var(--c2);border-color:color-mix(in srgb,var(--c2) 55%,var(--hair));background:color-mix(in srgb,var(--c2) 10%,var(--surface));font-weight:700}
 .project-structure-block{min-width:0}
-.project-structure-list{margin-top:5px;max-height:180px;overflow:auto;border-top:1px solid var(--grid)}
-.project-structure-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;border-top:1px solid var(--grid);padding:7px 0;min-width:0}
+.project-structure-head{display:flex;align-items:center;margin-top:10px}
+.project-structure-list{margin-top:5px;max-height:140px;overflow:auto;border-top:1px solid var(--grid)}
+.project-structure-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid var(--grid);padding:5px 0;min-width:0}
 .project-structure-row:first-child{border-top:0}
+.structure-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .parent-chip{font-size:11px;padding:1px 7px;border-radius:6px;background:color-mix(in srgb,var(--accent) 8%,var(--surface-2));color:var(--ink-2);border:1px solid var(--hair);display:inline-flex;gap:4px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .parent-chip span{overflow:hidden;text-overflow:ellipsis}
 .recent-row,.relation-row{justify-content:space-between;border-top:1px solid var(--grid);padding:5px 0}
@@ -123,12 +125,12 @@ footer{margin-top:34px;color:var(--muted);font-size:12px}
 .task-tab-sub{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 /* Kind accent on the left edge so epics/missions read as structural before the
    label does; placed after .active so the accent survives selection. */
-.task-tab.kind-epic{border-left:3px solid var(--c5)}
-.task-tab.kind-mission{border-left:3px solid var(--c8)}
+.task-tab.kind-epic{border-left:3px solid var(--c2)}
+.task-tab.kind-mission{border-left:3px solid var(--c5)}
 .kind-badge{font-size:11px;padding:1px 7px;border-radius:999px;white-space:nowrap;font-weight:650;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--hair)}
 .kind-badge svg{flex:0 0 auto}
-.kind-badge.kind-epic{color:var(--c5);border-color:color-mix(in srgb,var(--c5) 50%,var(--hair));background:color-mix(in srgb,var(--c5) 10%,var(--surface))}
-.kind-badge.kind-mission{color:var(--c8);border-color:color-mix(in srgb,var(--c8) 55%,var(--hair));background:color-mix(in srgb,var(--c8) 12%,var(--surface));font-weight:700}
+.kind-badge.kind-epic{color:var(--c2);border-color:color-mix(in srgb,var(--c2) 55%,var(--hair));background:color-mix(in srgb,var(--c2) 10%,var(--surface))}
+.kind-badge.kind-mission{color:var(--c5);border-color:color-mix(in srgb,var(--c5) 55%,var(--hair));background:color-mix(in srgb,var(--c5) 12%,var(--surface));font-weight:700}
 .kind-badge.kind-incubator{color:var(--ink-2);border-color:var(--hair);background:var(--surface-2)}
 .active-task-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--grid);border-bottom:1px solid var(--grid);padding:9px 0;margin:2px 0 10px}
 .task-log-panel{display:grid;gap:10px}

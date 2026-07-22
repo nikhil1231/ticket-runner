@@ -314,22 +314,17 @@ function TokenUsage({ tokens, onOpen }) {
   );
 }
 
-function ProjectStructureList({ title, items = [], onOpen, empty }) {
+function ProjectStructureList({ kind, items = [], onOpen, empty }) {
   return (
     <div className="project-structure-block">
-      <div className="k spaced">{title}</div>
+      <div className="project-structure-head"><KindBadge kind={kind} /></div>
       {!items.length ? <div className="muted tiny-gap">{empty}</div> : (
         <div className="project-structure-list">
           {items.map((item) => (
             <div className="project-structure-row" key={item.shortId}>
-              <div className="state-main">
-                <TicketLink item={item} onOpen={onOpen} />
-                <div className="state-meta">
-                  <KindBadge kind={item.kind} />
-                  <StatusTag status={item.status} />
-                  <span className="mono">{item.shortId}</span>
-                </div>
-              </div>
+              {item.shortId ? (
+                <button className="linkbtn ticket-link structure-title" type="button" onClick={() => onOpen(item.shortId)}>{item.title || '(untitled)'}</button>
+              ) : <span className="structure-title">{item.title || '(untitled)'}</span>}
               <span className="muted nowrap">{ago(item.at)}</span>
             </div>
           ))}
@@ -367,7 +362,7 @@ function Projects({ data, onOpen }) {
                   {project.flywheelEnabled ? (
                     <span className="tag flywheel-tag" title={project.flywheelContinuous ? 'Flywheel continuously refills approved work' : 'Flywheel decomposes this project mission'}>
                       <Dot color="var(--c2)" />
-                      flywheel{project.flywheelContinuous ? ' continuous' : ''}{project.flywheelMaxEpics ? ' / ' + project.flywheelMaxEpics + ' epics' : ''}
+                      flywheel
                     </span>
                   ) : null}
                   {stack ? (
@@ -382,8 +377,8 @@ function Projects({ data, onOpen }) {
                   <span className="chip">{project.integrationMode}{project.integrationEnabled ? '' : ' - off'}</span>
                 </div>
                 <StatusBar counts={counts} statuses={data.statuses} />
-                <ProjectStructureList title="Missions" items={structure.missions} onOpen={onOpen} empty="No active missions." />
-                <ProjectStructureList title="Epics" items={structure.epics} onOpen={onOpen} empty="No active epics." />
+                <ProjectStructureList kind="mission" items={structure.missions} onOpen={onOpen} empty="No active missions." />
+                <ProjectStructureList kind="epic" items={structure.epics} onOpen={onOpen} empty="No active epics." />
               </div>
             );
           })}
