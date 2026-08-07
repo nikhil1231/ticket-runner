@@ -1076,7 +1076,7 @@ test('pollCommands parses GitHub default capitalization for in-progress status',
   assert.equal(commands[0].snapshot.status, 'in_progress');
 });
 
-test('pollCommands intakes incubator-labelled issues but leaves other kinds alone', async (t) => {
+test('pollCommands intakes the kinds a human authors and never files an epic issue as a ticket', async (t) => {
   const { store } = fixture(t);
   const transport = fakeTransport();
   const seed = (number, label) => transport.issues.set(number, {
@@ -1092,13 +1092,58 @@ test('pollCommands intakes incubator-labelled issues but leaves other kinds alon
   });
   seed(1, 'incubator');
   seed(2, null);
-  seed(3, 'epic');
+  seed(3, 'epic'); // runner-owned: the flywheel creates epics locally and mirrors them out
+  seed(4, 'mission'); // human-authored: this is how the flywheel gets its brief
   const gh = tracker(transport);
-  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', intakeKinds: ['feature', 'incubator', 'mission'] });
 
   const created = commands.filter((command) => command.type === 'create');
-  assert.deepEqual(created.map((command) => command.trackerId), ['1', '2']);
-  assert.deepEqual(created.map((command) => command.snapshot.kind), ['incubator', 'feature']);
+  assert.deepEqual(created.map((command) => command.trackerId), ['1', '2', '4']);
+  assert.deepEqual(created.map((command) => command.snapshot.kind), ['incubator', 'feature', 'mission']);
+});
+
+// Epics are mirrored out carrying an `epic` label, so a poll that filtered every
+// snapshot by kind dropped them before any command was built - taking all four
+// epic-only board paths with it. Intake is gated by kind; commands are not.
+test('pollCommands accepts board commands on epic cards even though epics are never intaken', async (t) => {
+  const epicCase = async (t, { boardStatus, storeStatus }) => {
+    const { store } = fixture(t);
+    const transport = fakeTransport();
+    transport.issues.set(20, {
+      number: 20,
+      node_id: 'ISSUE_20',
+      title: 'Epic: make it good',
+      body: 'Epic body',
+      labels: [{ name: 'epic' }],
+      assignees: [{ login: 'ticket-runner-bot' }],
+      projectItemId: 'ITEM_20',
+      projectStatus: boardStatus,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    });
+    store.upsertFromTracker({
+      tracker: 'github:acme/widgets', trackerId: '20', projectKey: 'widgets', kind: 'epic', title: 'Epic: make it good', status: storeStatus,
+    });
+    const gh = tracker(transport);
+    const commands = await gh.pollCommands({ store, projectKey: 'widgets', intakeKinds: ['feature', 'incubator', 'mission'] });
+    return commands.filter((command) => command.type !== 'refresh_intent' && command.type !== 'link_parent');
+  };
+
+  // Approving a proposal: flywheel tells the human to move it to Not started.
+  const approved = await epicCase(t, { boardStatus: 'Not started', storeStatus: 'in_review' });
+  assert.deepEqual(approved.map((command) => command.type), ['requeue']);
+
+  // Rejecting a proposal.
+  const rejected = await epicCase(t, { boardStatus: 'Cancelled', storeStatus: 'in_review' });
+  assert.deepEqual(rejected.map((command) => command.type), ['cancel']);
+
+  // Signing off an epic parked in Testing cascades a merge of all its tickets.
+  const signedOff = await epicCase(t, { boardStatus: 'Done', storeStatus: 'testing' });
+  assert.deepEqual(signedOff.map((command) => command.type), ['authorize_epic_merge']);
+
+  // Reopening a parked epic to add more tickets to it.
+  const resumed = await epicCase(t, { boardStatus: 'In progress', storeStatus: 'testing' });
+  assert.deepEqual(resumed.map((command) => command.type), ['resume_epic']);
 });
 
 test('pollCommands notices an incubator label added after intake and flips the ticket kind', async (t) => {
@@ -1119,7 +1164,7 @@ test('pollCommands notices an incubator label added after intake and flips the t
     tracker: 'github:acme/widgets', trackerId: '11', projectKey: 'widgets', kind: 'feature', title: 'Scrappy idea', status: 'queued',
   });
   const gh = tracker(transport);
-  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', intakeKinds: ['feature', 'incubator', 'mission'] });
   applyTrackerCommands({ store, commands });
 
   assert.ok(commands.some((command) => command.type === 'refresh_intent'));
@@ -1145,7 +1190,7 @@ test('pollCommands treats Done on a planned ticket as plan approval, not manual 
   });
   store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
   const gh = tracker(transport);
-  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', intakeKinds: ['feature', 'incubator', 'mission'] });
   const actions = applyTrackerCommands({ store, commands });
 
   assert.deepEqual(commands.map((command) => command.type), ['incubator_approve']);

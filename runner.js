@@ -105,16 +105,21 @@ function trackerForStoreTicket(config, ticket, cache) {
   return realProjectTracker(board, cache);
 }
 
-// Incubator tickets are ordinary issues on a project board wearing an
-// `incubator` label, so they are polled from the same boards as features.
-const POLLED_KINDS = ['feature', 'incubator'];
+// Kinds a human authors on the board, and so the kinds intake files new
+// tickets for. Features and incubator notes are written straight onto the
+// board, and a `mission` ticket is how a human hands the flywheel its brief.
+// Epics are runner-owned - the flywheel creates them locally and mirrors them
+// out - so an epic-labelled issue must never be intaken as a second, childless
+// epic. This gates intake only; board commands on tickets that already exist
+// are accepted for every kind.
+const INTAKE_KINDS = ['feature', 'incubator', 'mission'];
 
 async function pollAndApplyCommands(config, store, cache) {
   const combined = { promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [] };
   for (const board of config.projects) {
     const tracker = realProjectTracker(board, cache);
     if (!tracker.pollCommands) continue;
-    const commands = await tracker.pollCommands({ store, projectKey: board.key || board.app, kinds: POLLED_KINDS });
+    const commands = await tracker.pollCommands({ store, projectKey: board.key || board.app, intakeKinds: INTAKE_KINDS });
     const actions = applyTrackerCommands({ store, commands, log });
     combined.promotions.push(...actions.promotions);
     combined.forceDeploys.push(...actions.forceDeploys);
