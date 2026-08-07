@@ -69,6 +69,37 @@ Query-only tickets are handled without an implementation worktree. Prefix the
 title with `[Query]` or start the body with `Query:`. The runner appends an
 `AI query answer` section and parks the ticket in `Needs info`.
 
+## Incubator
+
+Label a ticket `incubator` and the runner plans it instead of building it. Use
+it when you only have scrappy notes and want the shape of the change agreed
+before any code is written.
+
+1. Open an issue with rough notes, label it `incubator`, and leave it on
+   `Not started`.
+2. The runner claims it like any other ticket, but reads the repo in a
+   throwaway read-only worktree - no edits, no commits. It rewrites the
+   `AI implementation plan` section of the issue body and parks the ticket in
+   `Needs info`.
+3. From there:
+   - **Not happy?** Comment on the ticket and move it back to `Not started`
+     with the label still on. The next pass reads your comments alongside the
+     current plan and rewrites the plan section in place - it never stacks up
+     plan sections, and never edits your original notes above it.
+   - **Happy?** Move it to `Done`. The runner removes the `incubator` label and
+     puts the ticket straight back on `Not started` as an ordinary feature, so
+     the next claim implements it. The plan is in the issue body, so the
+     implementing agent reads it through the normal ticket body.
+
+Adding or removing the label by hand only re-decides a ticket's kind while it is
+still on `Not started`. Once a plan is parked in `Needs info`, `Done` is the way
+to approve it - pulling the label off by hand there would read as you having
+resolved the ticket yourself and close it, plan unimplemented.
+
+Planning uses the `fallbackPolicies.incubator` engine chain and costs about as
+much as an implementation run. If the notes are too thin to plan against, the
+agent parks the ticket in `Needs info` with questions instead of guessing.
+
 ## Config
 
 Projects are configured locally:

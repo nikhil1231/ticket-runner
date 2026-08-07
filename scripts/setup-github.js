@@ -6,7 +6,7 @@ const github = require('../lib/github');
 
 const baseDir = path.resolve(__dirname, '..');
 const LABELS = {
-  incubator: 'Planning tickets awaiting implementation handoff',
+  incubator: 'Plan this ticket instead of implementing it',
   epic: 'Epic-level parent issue',
   mission: 'Mission-level parent issue',
   'force-deploy': 'One-shot human override for the testing stack',

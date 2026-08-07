@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const github = require('./lib/github');
 const { runTicket } = require('./lib/run');
-const { runIncubatorTicket, handoffTicket } = require('./lib/incubator');
+const { runIncubatorTicket, approvePlan } = require('./lib/incubator');
 const { runFlywheelPass } = require('./lib/flywheel');
 const { runArchivePass } = require('./lib/archive');
 const { forceDeploy } = require('./lib/force-deploy');
@@ -21,7 +21,7 @@ const { repairRunner } = require('./lib/self-heal');
 const { resolveProjects, findProject } = require('./lib/projects');
 const { openDb, closeDb } = require('./lib/db');
 const { createStore } = require('./lib/store');
-const { getProjectTracker, getIncubatorTracker } = require('./lib/trackers');
+const { getProjectTracker } = require('./lib/trackers');
 const { flushOutbox } = require('./lib/sync');
 const { createStoreBackedTracker } = require('./lib/store-tracker');
 const { applyTrackerCommands } = require('./lib/cutover');
@@ -68,7 +68,6 @@ function loadConfig() {
 
 function configNeedsGithub(config) {
   if (bugReports.bugConfig(config)) return true;
-  if (config.incubator?.tracker?.type === 'github') return true;
   return (config.projects || []).some((project) => project.tracker?.type === 'github' || !project.tracker?.type);
 }
 
@@ -95,51 +94,33 @@ function realProjectTracker(board, cache) {
   return getProjectTracker(board, { log, cache });
 }
 
-function realIncubatorTracker(config, cache) {
-  return getIncubatorTracker(config, { log, cache });
-}
-
 function projectTrackerFacade({ store, board, cache }) {
   const tracker = realProjectTracker(board, cache);
   return createStoreBackedTracker({ store, tracker, projectKey: board.key || board.app });
 }
 
-function incubatorTrackerFacade({ store, config, cache }) {
-  const tracker = realIncubatorTracker(config, cache);
-  if (!tracker) return null;
-  return createStoreBackedTracker({ store, tracker, projectKey: null });
-}
-
 function trackerForStoreTicket(config, ticket, cache) {
-  if (ticket.kind === 'incubator') {
-    const tracker = realIncubatorTracker(config, cache);
-    if (!tracker) throw new Error('incubator tracker is not configured');
-    return tracker;
-  }
   const board = findProject(config, ticket.projectKey);
   if (!board) throw new Error(`unknown project for ticket ${ticket.shortId}: ${ticket.projectKey}`);
   return realProjectTracker(board, cache);
 }
 
-async function pollIncubatorCommands(config, store, cache) {
-  const tracker = realIncubatorTracker(config, cache);
-  if (!tracker?.pollCommands) return [];
-  return tracker.pollCommands({ store, projectKey: config.incubator?.projectKey || null, kind: 'incubator' });
-}
+// Incubator tickets are ordinary issues on a project board wearing an
+// `incubator` label, so they are polled from the same boards as features.
+const POLLED_KINDS = ['feature', 'incubator'];
 
 async function pollAndApplyCommands(config, store, cache) {
   const combined = { promotions: [], forceDeploys: [], incubatorApprovals: [], epicMerges: [] };
   for (const board of config.projects) {
     const tracker = realProjectTracker(board, cache);
     if (!tracker.pollCommands) continue;
-    const commands = await tracker.pollCommands({ store, projectKey: board.key || board.app, kind: 'feature' });
+    const commands = await tracker.pollCommands({ store, projectKey: board.key || board.app, kinds: POLLED_KINDS });
     const actions = applyTrackerCommands({ store, commands, log });
     combined.promotions.push(...actions.promotions);
     combined.forceDeploys.push(...actions.forceDeploys);
     combined.epicMerges.push(...actions.epicMerges);
+    combined.incubatorApprovals.push(...actions.incubatorApprovals);
   }
-  const incubatorActions = applyTrackerCommands({ store, commands: await pollIncubatorCommands(config, store, cache), log });
-  combined.incubatorApprovals.push(...incubatorActions.incubatorApprovals);
   return combined;
 }
 
@@ -236,10 +217,13 @@ async function processStoreActions(config, store, actions, cache) {
   for (const ticketRef of actions.incubatorApprovals) {
     const ticket = store.getById(ticketRef.id);
     if (!ticket) continue;
-    const board = findProject(config, ticket.projectKey || ticket.app);
-    const tracker = incubatorTrackerFacade({ store, config, cache });
-    const handedOff = await handoffTicket({ config, ticket, board, log, services: { tracker } });
-    if (handedOff && ticket.status !== 'done') store.transition(ticket.id, 'done');
+    const board = findProject(config, ticket.projectKey);
+    if (!board) {
+      store.transition(ticket.id, 'needs_info');
+      store.enqueueComment(ticket.id, `Project "${ticket.projectKey}" is not configured, so this plan cannot be handed to implementation.`);
+      continue;
+    }
+    await approvePlan({ ticket, board, store, log, services: { tracker: projectTrackerFacade({ store, board, cache }) } });
   }
   return { status: 'ok' };
 }
@@ -312,27 +296,6 @@ async function claimAndRunReadyTicket({ config, store, cache, trackerFor, dryRun
   // Without this, the dashboard shows the local claim immediately, but GitHub
   // can remain "Not started" until the run finishes and the next tick flushes.
   await flush({ store, trackerFor, log });
-  if (ticket.kind === 'incubator') {
-    const board = findProject(config, ticket.projectKey || ticket.app);
-    const tracker = incubatorTrackerFacade({ store, config, cache });
-    if (!tracker) {
-      store.transition(ticket.id, 'failed');
-      store.enqueueComment(ticket.id, 'Incubator tracker is not configured; this planning ticket cannot run.');
-      await flush({ store, trackerFor, log });
-      return { status: 'failed' };
-    }
-    if (!board) {
-      await tracker.mirror(ticket, { status: 'needs_info' });
-      await tracker.comment(ticket, 'Select a Project, then return this ticket to Not started.');
-      await flush({ store, trackerFor, log });
-      return { status: 'needs_info' };
-    }
-    const runIncubator = services.runIncubatorTicket || runIncubatorTicket;
-    const result = await runIncubator({ config, board, ticket, log, services: { tracker, store } });
-    await flush({ store, trackerFor, log });
-    store.exportJsonl();
-    return result;
-  }
   const board = findProject(config, ticket.projectKey);
   if (!board) {
     store.transition(ticket.id, 'failed');
@@ -340,10 +303,19 @@ async function claimAndRunReadyTicket({ config, store, cache, trackerFor, dryRun
     await flush({ store, trackerFor, log });
     return { status: 'failed' };
   }
-  const runFeature = services.runTicket || runTicket;
   const tracker = services.projectTrackerFacade
     ? services.projectTrackerFacade({ store, board, cache })
     : projectTrackerFacade({ store, board, cache });
+  // An incubator ticket is a feature ticket that gets planned instead of built:
+  // same board, same tracker, read-only worktree, plan written back to the issue.
+  if (ticket.kind === 'incubator') {
+    const runIncubator = services.runIncubatorTicket || runIncubatorTicket;
+    const result = await runIncubator({ config, board, ticket, log, services: { tracker, store } });
+    await flush({ store, trackerFor, log });
+    store.exportJsonl();
+    return result;
+  }
+  const runFeature = services.runTicket || runTicket;
   const result = await runFeature({
     config,
     board,

@@ -4,8 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   PLAN_HEADING, recoveryStatus, splitManagedPlan, extractPlan,
-  buildPlanningPrompt, updateManagedPlan, handoffTicket,
+  buildPlanningPrompt, updateManagedPlan, approvePlan,
 } = require('../lib/incubator');
+const { nextKind } = require('../lib/cutover');
 
 test('stale planning claims requeue until attempts are exhausted', () => {
   assert.equal(recoveryStatus({ attempts: 1 }, 2), 'Not started');
@@ -52,20 +53,61 @@ test('managed plan appends initially and precisely replaces on revision', async 
   assert.match(calls[1].markdown, /Revised detailed plan/);
 });
 
-test('handoff promotes the incubator ticket through its tracker', async () => {
-  const calls = [];
-  const tracker = {
-    promoteIncubator: async (ticket, target) => calls.push(['promote', ticket.trackerId, target]),
-    mirror: async () => {},
-    comment: async () => {},
+function approvalTracker(calls, overrides = {}) {
+  return {
+    promoteIncubator: async (ticket) => calls.push(['promote', ticket.trackerId]),
+    mirror: async (_ticket, payload) => calls.push(['mirror', payload.status]),
+    comment: async () => calls.push(['comment']),
+    ...overrides,
   };
-  const ok = await handoffTicket({
-    config: {},
-    ticket: { trackerId: '42', title: 'Ticket' },
+}
+
+test('approving a plan drops the incubator label and requeues it for implementation', async () => {
+  const calls = [];
+  const kinds = [];
+  const store = { refreshIntent: (id, patch) => kinds.push([id, patch.kind]) };
+  const ok = await approvePlan({
+    ticket: { id: 7, trackerId: '42', title: 'Ticket', projectKey: 'caligo' },
     board: { app: 'caligo' },
-    log: () => {},
+    store,
+    services: { tracker: approvalTracker(calls) },
+  });
+
+  assert.equal(ok, true);
+  assert.deepEqual(kinds, [[7, 'feature']]);
+  // Label removal must be enqueued before the requeue, so the ticket is never
+  // back on Not started while still looking like an incubator ticket.
+  assert.deepEqual(calls, [['promote', '42'], ['mirror', 'queued'], ['comment']]);
+});
+
+test('a failed approval parks the plan again instead of silently requeueing it', async () => {
+  const calls = [];
+  const kinds = [];
+  const tracker = approvalTracker(calls, {
+    promoteIncubator: async () => { throw new Error('github said no'); },
+  });
+  const ok = await approvePlan({
+    ticket: { id: 7, trackerId: '42', title: 'Ticket', projectKey: 'caligo' },
+    board: { app: 'caligo' },
+    store: { refreshIntent: (id, patch) => kinds.push([id, patch.kind]) },
     services: { tracker },
   });
-  assert.equal(ok, true);
-  assert.deepEqual(calls, [['promote', '42', 'caligo']]);
+
+  assert.equal(ok, false);
+  assert.deepEqual(kinds, []); // kind never flipped, so it stays an incubator ticket
+  assert.deepEqual(calls, [['mirror', 'needs_info'], ['comment']]);
+});
+
+test('the incubator label only re-decides kind while a ticket is still waiting to be claimed', () => {
+  assert.equal(nextKind({ kind: 'feature', status: 'queued' }, { kind: 'incubator' }), 'incubator');
+  assert.equal(nextKind({ kind: 'incubator', status: 'queued' }, { kind: 'feature' }), 'feature');
+  assert.equal(nextKind({ kind: 'incubator', status: 'queued' }, { kind: 'incubator' }), undefined);
+  // A plan parked in Needs info is approved by moving it to Done, not by pulling
+  // the label off - honouring the label here would read as a human-resolved
+  // ticket and accept it straight to Done, throwing the plan away.
+  assert.equal(nextKind({ kind: 'incubator', status: 'needs_info' }, { kind: 'feature' }), undefined);
+  assert.equal(nextKind({ kind: 'feature', status: 'in_progress' }, { kind: 'incubator' }), undefined);
+  // Epics and missions are runner-owned; a stray label must not reclassify them.
+  assert.equal(nextKind({ kind: 'epic', status: 'queued' }, { kind: 'feature' }), undefined);
+  assert.equal(nextKind({ kind: 'feature', status: 'queued' }, { kind: 'epic' }), undefined);
 });

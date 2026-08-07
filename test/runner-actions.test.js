@@ -151,3 +151,40 @@ test('processStoreActions: a blocked promotion (remote advanced) leaves the epic
   assert.equal(store.getById(epic.id).status, 'testing'); // not closed; re-fires next poll
   assert.equal(store.getById(c1.id).status, 'testing');
 });
+
+test('processStoreActions: approving a plan requeues it as a feature with the label removal enqueued first', async (t) => {
+  const { baseDir, store } = fixture(t);
+  const ticket = seedFeature(store, { trackerId: '77', kind: 'incubator', title: 'Scrappy idea' });
+  store.transition(ticket.id, 'in_progress');
+  store.transition(ticket.id, 'needs_info'); // where a finished planning pass parks it
+  store.pendingOutbox(ticket.id).forEach((op) => store.outboxDone(op.id));
+
+  const actions = { promotions: [], forceDeploys: [], incubatorApprovals: [store.getById(ticket.id)], epicMerges: [] };
+  const result = await runner.processStoreActions(config(baseDir, store), store, actions, runner.trackerCache());
+
+  assert.equal(result.status, 'ok');
+  const approved = store.getById(ticket.id);
+  assert.equal(approved.kind, 'feature'); // next claim implements instead of replanning
+  assert.equal(approved.status, 'queued');
+  assert.equal(approved.attempts, 0);
+
+  const ops = store.pendingOutbox(ticket.id);
+  assert.equal(ops[0].op, 'promote_incubator'); // label comes off before the card goes back
+  assert.ok(ops.some((op) => op.op === 'mirror'));
+  assert.ok(ops.some((op) => op.op === 'comment' && /label has been removed/.test(op.payload.text)));
+});
+
+test('processStoreActions: an approval for an unconfigured project parks the plan instead of losing it', async (t) => {
+  const { baseDir, store } = fixture(t);
+  const ticket = seedFeature(store, { trackerId: '78', kind: 'incubator', projectKey: 'ghost', title: 'Orphan idea' });
+  store.transition(ticket.id, 'in_progress');
+  store.transition(ticket.id, 'needs_info');
+
+  const actions = { promotions: [], forceDeploys: [], incubatorApprovals: [store.getById(ticket.id)], epicMerges: [] };
+  await runner.processStoreActions(config(baseDir, store), store, actions, runner.trackerCache());
+
+  const parked = store.getById(ticket.id);
+  assert.equal(parked.kind, 'incubator');
+  assert.equal(parked.status, 'needs_info');
+  assert.ok(store.pendingOutbox(ticket.id).some((op) => op.op === 'comment' && /is not configured/.test(op.payload.text)));
+});

@@ -1075,3 +1075,80 @@ test('pollCommands parses GitHub default capitalization for in-progress status',
 
   assert.equal(commands[0].snapshot.status, 'in_progress');
 });
+
+test('pollCommands intakes incubator-labelled issues but leaves other kinds alone', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  const seed = (number, label) => transport.issues.set(number, {
+    number,
+    node_id: `ISSUE_${number}`,
+    title: `Issue ${number}`,
+    body: 'Scrappy notes',
+    labels: label ? [{ name: label }] : [],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectItemId: `ITEM_${number}`,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  seed(1, 'incubator');
+  seed(2, null);
+  seed(3, 'epic');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+
+  const created = commands.filter((command) => command.type === 'create');
+  assert.deepEqual(created.map((command) => command.trackerId), ['1', '2']);
+  assert.deepEqual(created.map((command) => command.snapshot.kind), ['incubator', 'feature']);
+});
+
+test('pollCommands notices an incubator label added after intake and flips the ticket kind', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(11, {
+    number: 11,
+    node_id: 'ISSUE_11',
+    title: 'Scrappy idea',
+    body: 'Some notes',
+    labels: [{ name: 'incubator' }], // added moments after the issue was opened
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectItemId: 'ITEM_11',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:01Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '11', projectKey: 'widgets', kind: 'feature', title: 'Scrappy idea', status: 'queued',
+  });
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+  applyTrackerCommands({ store, commands });
+
+  assert.ok(commands.some((command) => command.type === 'refresh_intent'));
+  assert.equal(store.getById(existing.id).kind, 'incubator');
+});
+
+test('pollCommands treats Done on a planned ticket as plan approval, not manual resolution', async (t) => {
+  const { store } = fixture(t);
+  const transport = fakeTransport();
+  transport.issues.set(12, {
+    number: 12,
+    node_id: 'ISSUE_12',
+    title: 'Planned idea',
+    body: 'Notes\n\n## AI implementation plan\n\nSteps',
+    labels: [{ name: 'incubator' }],
+    assignees: [{ login: 'ticket-runner-bot' }],
+    projectStatus: 'Done',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+  const existing = store.upsertFromTracker({
+    tracker: 'github:acme/widgets', trackerId: '12', projectKey: 'widgets', kind: 'incubator', title: 'Planned idea', status: 'needs_info',
+  });
+  store.setKv('cursor:github:acme/widgets:issues:etag', 'etag-1');
+  const gh = tracker(transport);
+  const commands = await gh.pollCommands({ store, projectKey: 'widgets', kinds: ['feature', 'incubator'] });
+  const actions = applyTrackerCommands({ store, commands });
+
+  assert.deepEqual(commands.map((command) => command.type), ['incubator_approve']);
+  assert.deepEqual(actions.incubatorApprovals.map((ticket) => ticket.id), [existing.id]);
+  assert.equal(store.getById(existing.id).status, 'needs_info'); // not accepted straight to Done
+});
